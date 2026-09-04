@@ -1,0 +1,21 @@
+# 示例文件：只使用占位符，不保存真实地址、IP、token 或 API key。
+models:
+  gemma12_agent:
+    provider: openai_compatible
+    base_url: http://LOCALHOST:PORT
+    model: google/gemma-4-12b-qat
+    capabilities: { chat: true, agent: true, tools: true }
+    roles: [zotero_agent, l1_fallback]
+  qwen27_reader:
+    provider: openai_compatible
+    endpoints: [http://PRIMARY_LAN:PORT/v1, http://SECONDARY_LAN:PORT/v1]
+    model: Qwen3.6-27B-AWQ-Hermes-256K
+    context_window: 245760
+    capabilities: { chat: true, agent: false, tools: false }
+    roles: [l1_primary, l2_primary]
+  gemma31_reviewer:
+    provider: openai_compatible
+    base_url: http://REVIEWER_LAN:PORT/v1
+    model: gemma-4-31b-it-claude-opus-distill-v2
+    capabilities: { chat: true, agent: false, tools: false }
+    roles: [l3_primary]

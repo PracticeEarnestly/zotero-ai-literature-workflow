@@ -1,0 +1,16 @@
+aiButler-ai-butler-prefs-heading = AI Butler Parameter Configuration
+aiButler-ai-butler-prefs-description = Configure the parameters of the AI Manager large model.
+aiButler-ai-butler-prefs-apiKey = API Key
+aiButler-ai-butler-prefs-apiKey-description = Please enter the LLM API key here.
+aiButler-ai-butler-prefs-apiUrl = API URL
+aiButler-ai-butler-prefs-apiUrl-description = Please enter the LLM API URL here. e.g., https://api.openai.com/v1/chat/completions
+aiButler-ai-butler-prefs-model = Model Selection
+aiButler-ai-butler-prefs-model-description = Specify the large model used by the butler, such as gpt-4-turbo or gemini-2.5-pro.
+aiButler-ai-butler-prefs-temperature = LLM Temperature
+aiButler-ai-butler-prefs-temperature-description = Controls the temperature of the large model. Higher values (e.g., 1.2) are more creative, while lower values (e.g., 0.3) are more rigorous.
+aiButler-ai-butler-prefs-stream = Streaming Output Mode
+aiButler-ai-butler-prefs-stream-hint = When enabled, the butler will output results incrementally like typing; otherwise, it will present them all at once.
+aiButler-ai-butler-prefs-summaryPrompt = Butler Instruction Template
+aiButler-ai-butler-prefs-summaryPrompt-description = You can customize the butler's work instructions to meet your unique reading needs.
+aiButler-ai-butler-prefs-resetPrompt = Restore Default Instructions
+aiButler-ai-butler-prefs-apiUrl-example = API Example (OpenAI-compatible): https://api.openai.com/v1/chat/completions

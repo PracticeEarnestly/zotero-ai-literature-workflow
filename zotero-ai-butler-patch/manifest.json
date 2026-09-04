@@ -1,0 +1,20 @@
+{
+  "manifest_version": 2,
+  "name": "zotero-ai-butler",
+  "version": "3.8.5",
+  "description": "Your personal AI butler, automatically and meticulously reads papers and summarizes notes.",
+  "homepage_url": "https://github.com/steven-jianhao-li/zotero-AI-Butler#readme",
+  "author": "Steven Jianhao Li",
+  "icons": {
+    "48": "content/icons/logo.png",
+    "96": "content/icons/logo.png"
+  },
+  "applications": {
+    "zotero": {
+      "id": "zotero-ai-butler@github.com",
+      "update_url": "https://github.com/steven-jianhao-li/zotero-AI-Butler/releases/download/release/update.json",
+      "strict_min_version": "7.0.0",
+      "strict_max_version": "10.*"
+    }
+  }
+}

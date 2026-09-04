@@ -1,0 +1,16 @@
+aiButler-ai-butler-prefs-heading = AI 管家参数配置
+aiButler-ai-butler-prefs-description = 配置 AI管家 大模型参数。
+aiButler-ai-butler-prefs-apiKey = API 密钥
+aiButler-ai-butler-prefs-apiKey-description = 请在此输入大模型密钥。
+aiButler-ai-butler-prefs-apiUrl = API 接口地址
+aiButler-ai-butler-prefs-apiUrl-description = 请在此输入大模型接口地址。
+aiButler-ai-butler-prefs-model = 大模型选择
+aiButler-ai-butler-prefs-model-description = 指定管家使用的大模型，例如 gpt-4-turbo 或 gemini-2.5-pro。
+aiButler-ai-butler-prefs-temperature = 大模型温度
+aiButler-ai-butler-prefs-temperature-description = 控制大模型温度。值越高（如 1.2）则越有创意，值越低（如 0.3）则越严谨。
+aiButler-ai-butler-prefs-stream = 流式输出模式
+aiButler-ai-butler-prefs-stream-hint = 开启后，管家会像打字一样逐步输出结果；关闭则一次性呈现。
+aiButler-ai-butler-prefs-summaryPrompt = 管家指令模板
+aiButler-ai-butler-prefs-summaryPrompt-description = 您可以定制管家的工作指令，以满足您独特的阅读需求。
+aiButler-ai-butler-prefs-resetPrompt = 恢复默认指令
+aiButler-ai-butler-prefs-apiUrl-example = 接口示例（OpenAI 兼容）：https://api.openai.com/v1/chat/completions

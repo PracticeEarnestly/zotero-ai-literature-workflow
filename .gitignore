@@ -1,0 +1,21 @@
+zotero-ai-literature-deployment/backup/
+zotero-ai-literature-deployment/MODEL_ENDPOINTS.local.md
+zotero-ai-literature-deployment/config/model-endpoints.local.yaml
+
+# Generated deployment artifacts and private library data
+zotero-ai-literature-deployment/staging/
+zotero-ai-literature-deployment/source/
+*.xpi
+*.zip
+*.pdf
+
+# Local development/build state
+**/node_modules/
+**/.cache/
+**/__pycache__/
+**/.DS_Store
+
+# Separate upstream or inspection repositories; keep them independent
+upstream-zotero-ai-butler/
+zotero-literature-flow/
+actions-tags-inspect/
