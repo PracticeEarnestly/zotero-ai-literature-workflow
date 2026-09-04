@@ -42,6 +42,10 @@ MARKERS = (
     "bindStyleRatingClickFallback(win)",
     "extractZoteroTags(content)",
     "applyZoteroTags(item, tags)",
+    "workflowTagOnly",
+    "if (!workflowTagOnly)",
+    "An unrelated AI note must not block L1",
+    "this.scheduleQueuedTaskStart(tqm);",
     'workflowLevel === "L1" || workflowLevel === "L2" ? "Qwen"',
     'workflowLevel === "L3" ? "OpenAI 兼容 (Chat Completions)"',
     "abortedTaskRecoveryCount",
@@ -53,7 +57,7 @@ XPI_NAME = "zotero-ai-butler@github.com.xpi"
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile-dir", required=True, type=Path, help="Zotero profile directory")
-    parser.add_argument("--expected-version", default="3.8.5.2")
+    parser.add_argument("--expected-version", default="3.8.5.3")
     args = parser.parse_args()
 
     xpi_path = args.profile_dir / "extensions" / XPI_NAME

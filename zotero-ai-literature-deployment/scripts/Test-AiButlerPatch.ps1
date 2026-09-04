@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$ProfileDirectory,
-    [string]$ExpectedVersion = '3.8.5.2'
+    [string]$ExpectedVersion = '3.8.5.3'
 )
 
 $ErrorActionPreference = 'Stop'

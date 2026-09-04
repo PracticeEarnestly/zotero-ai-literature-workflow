@@ -34,6 +34,6 @@ L1/L2/L3 自定义 Skill 位于 llm-for-zotero 的实际用户 Skills 目录；�
 | `L2：Evidence Card` | `02_L2_EvidenceCard` |
 | `L3：Deep Reading` | `03_L3_DeepReading` |
 
-自定义 AI Butler 3.8.5.2 已移除官方更新地址，日常不会自动被上游版本覆盖。本地补丁提供自动 L1、评级触发的自动 L2/L3、L3 队列交接唤醒、终止任务恢复和 Collection 批量 L1；需要升级时，先运行补丁检测，再手动安装经过验证的新包。详见 [UPGRADE_GUARD.md](UPGRADE_GUARD.md)。
+自定义 AI Butler 3.8.5.3 已移除官方更新地址，日常不会自动被上游版本覆盖。本地补丁提供自动 L1、评级触发的自动 L2/L3、L3 队列交接唤醒、终止任务恢复和 Collection 批量 L1。工作流层级采用 Literature Flow 的精简规则：只使用固定阶段标签、结果追加到已有 AI Note，且非 L1 的旧 AI Note 不会阻止新 PDF 自动进入 L1。详见 [LITERATURE_FLOW_ALIGNMENT.md](LITERATURE_FLOW_ALIGNMENT.md) 与 [UPGRADE_GUARD.md](UPGRADE_GUARD.md)。
 
 详见 [DEPLOYMENT_AUDIT.md](DEPLOYMENT_AUDIT.md)、[DEPLOYMENT_COMPLETE.md](DEPLOYMENT_COMPLETE.md) 和 [ROLLBACK.md](ROLLBACK.md)。
