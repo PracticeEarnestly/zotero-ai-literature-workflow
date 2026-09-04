@@ -12,3 +12,9 @@ It includes deployment documentation, L1–L3 prompt templates, workflow scripts
 - L1 and L2 use Qwen 27B. L3 uses the configured Gemma 31B endpoint.
 
 For the full deployment guide, start with [Zotero_AI_Literature_L1_L2_L3_Codex_Deployment_V2.md](zotero-ai-literature-deployment/Zotero_AI_Literature_L1_L2_L3_Codex_Deployment_V2.md).
+
+## Minimal plugin release
+
+The streamlined implementation is intentionally maintained as a separate public project: [PracticeEarnestly/zotero-literature-flow](https://github.com/PracticeEarnestly/zotero-literature-flow). Its current release is [v0.2.1](https://github.com/PracticeEarnestly/zotero-literature-flow/releases/tag/v0.2.1), which provides the installable XPI, `update.json`, and a complete source archive.
+
+This repository remains the private deployment and AI Butler patch repository. It does not duplicate the Literature Flow source or release artifacts. See [Literature Flow integration](zotero-ai-literature-deployment/LITERATURE_FLOW_INTEGRATION.md) for the responsibility and version map.
