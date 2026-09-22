@@ -6677,19 +6677,36 @@ Generate an academic infographic poster.`;
       MINERU_POLL_INTERVAL_MS = 5e3;
       DEFAULT_MINERU_TIMEOUT_MS = 3e5;
       MineruClient = class {
+        static async fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_MINERU_TIMEOUT_MS) {
+          const NativeAbortController = globalThis.AbortController;
+          if (!NativeAbortController) return await fetch(url, options);
+          const controller = new NativeAbortController();
+          const timer = setTimeout(() => controller.abort(), Math.max(1000, timeoutMs));
+          try {
+            return await fetch(url, { ...options, signal: controller.signal });
+          } catch (error) {
+            if (controller.signal.aborted) throw new Error(`MinerU network request timed out after ${timeoutMs} ms`);
+            throw error;
+          } finally {
+            clearTimeout(timer);
+          }
+        }
         /**
          * Main entry to extract markdown from a Zotero PDF item using MinerU
          */
-        static async extractMarkdown(item) {
+        static async extractMarkdown(item, selectedAttachment) {
           const apiKey = getPref("mineruApiKey") || "";
           if (!apiKey) {
             throw new Error("MinerU API Key not configured.");
           }
-          const pdfAttachments = await PDFExtractor.getAllPdfAttachments(item);
+          const pdfAttachments = selectedAttachment ? [selectedAttachment] : await PDFExtractor.getAllPdfAttachments(item);
           if (!pdfAttachments || pdfAttachments.length === 0) {
             throw new Error("No PDF attachment found.");
           }
-          const pdfAttachment = pdfAttachments[0];
+          const pdfAttachment = selectedAttachment || await PDFExtractor.getFirstAccessiblePDFAttachment(item);
+          if (!pdfAttachment) {
+            throw new Error("No locally accessible PDF attachment found.");
+          }
           const filePath = await pdfAttachment.getFilePathAsync();
           if (!filePath) {
             throw new Error("PDF file path not found.");
@@ -6698,7 +6715,7 @@ Generate an academic infographic poster.`;
           const fileData = await IOUtils.read(filePath);
           const modelVersion = getMineruModelVersion();
           const fileName = "document.pdf";
-          const batchRes = await fetch("https://mineru.net/api/v4/file-urls/batch", {
+          const batchRes = await this.fetchWithTimeout("https://mineru.net/api/v4/file-urls/batch", {
             method: "POST",
             headers: {
               Authorization: `Bearer ${apiKey}`,
@@ -6708,7 +6725,7 @@ Generate an academic infographic poster.`;
               files: [{ name: fileName }],
               model_version: modelVersion
             })
-          });
+          }, getMineruTimeoutMs());
           if (!batchRes.ok) {
             const err = await batchRes.text();
             throw new Error(`Failed to get upload URL: ${err}`);
@@ -6729,10 +6746,10 @@ Generate an academic infographic poster.`;
             );
           }
           ztoolkit.log(`[MineruIntegration] Uploading PDF to Mineru PUT URL...`);
-          const putRes = await fetch(putUrl, {
+          const putRes = await this.fetchWithTimeout(putUrl, {
             method: "PUT",
             body: fileData
-          });
+          }, getMineruTimeoutMs());
           if (!putRes.ok) {
             const errText = await putRes.text();
             throw new Error(
@@ -6757,11 +6774,12 @@ Generate an academic infographic poster.`;
               );
             }
             attempt += 1;
-            const res = await fetch(url, {
+            const remainingRequestMs = Math.max(1000, timeoutMs - (Date.now() - startedAt));
+            const res = await this.fetchWithTimeout(url, {
               headers: {
                 Authorization: `Bearer ${apiKey}`
               }
-            });
+            }, Math.min(30000, remainingRequestMs));
             if (!res.ok) {
               const errText = await res.text();
               throw new Error(
@@ -6787,7 +6805,7 @@ Generate an academic infographic poster.`;
         }
         static async downloadAndExtractMarkdown(zipUrl) {
           ztoolkit.log(`[MineruIntegration] Downloading zip result from ${zipUrl}`);
-          const res = await fetch(zipUrl);
+          const res = await this.fetchWithTimeout(zipUrl, {}, getMineruTimeoutMs());
           if (!res.ok) {
             throw new Error(`Failed to download zip file from ${zipUrl}`);
           }
@@ -6896,6 +6914,21 @@ Generate an academic infographic poster.`;
           }
         }
         /**
+         * 返回最早添加且本地文件路径可用的 PDF。
+         * 同一条目可能保留失效的旧附件，不能只按添加时间选择第一个。
+         */
+        static async getFirstAccessiblePDFAttachment(item) {
+          const pdfAttachments = await this.getAllPdfAttachments(item);
+          for (const attachment of pdfAttachments) {
+            try {
+              if (await attachment.getFilePathAsync()) return attachment;
+            } catch (error) {
+              ztoolkit.log(`[PDFExtractor] 无法读取 PDF 附件路径: ${attachment.id}`, error);
+            }
+          }
+          return null;
+        }
+        /**
          * 获取 PDF 附件的文件大小 (MB)
          *
          * 用于在处理前检查文件大小，避免处理过大的扫描版 PDF
@@ -6905,25 +6938,8 @@ Generate an academic infographic poster.`;
          */
         static async getPdfFileSize(item) {
           try {
-            const attachments = item.getAttachments();
-            if (attachments.length === 0) {
-              return 0;
-            }
-            const pdfAttachments = [];
-            for (const attachmentID of attachments) {
-              const attachment = await Zotero.Items.getAsync(attachmentID);
-              if (attachment.attachmentContentType === "application/pdf") {
-                pdfAttachments.push(attachment);
-              }
-            }
-            if (pdfAttachments.length === 0) {
-              return 0;
-            }
-            const pdfAttachment = pdfAttachments.sort((a, b2) => {
-              const dateA = new Date(a.dateAdded).getTime();
-              const dateB = new Date(b2.dateAdded).getTime();
-              return dateA - dateB;
-            })[0];
+            const pdfAttachment = await this.getFirstAccessiblePDFAttachment(item);
+            if (!pdfAttachment) return 0;
             const pdfPath = await pdfAttachment.getFilePathAsync();
             if (!pdfPath) {
               return 0;
@@ -6965,50 +6981,279 @@ Generate an academic infographic poster.`;
          * console.log(`提取了 ${fullText.length} 个字符`);
          * ```
          */
-        static async extractTextFromItem(item, pdfProcessMode) {
-          const attachments = item.getAttachments();
-          if (attachments.length === 0) {
-            throw new Error("No attachments found for this item");
-          }
-          const pdfAttachments = [];
-          for (const attachmentID of attachments) {
-            const attachment = await Zotero.Items.getAsync(attachmentID);
-            if (attachment.attachmentContentType === "application/pdf") {
-              pdfAttachments.push(attachment);
+        static workflowPdfTextCache = /* @__PURE__ */ new Map();
+        static workflowPdfTextInFlight = /* @__PURE__ */ new Map();
+        static workflowPdfCacheHitByItem = /* @__PURE__ */ new Map();
+        static workflowLlmCacheDiagnosticsByItem = /* @__PURE__ */ new Map();
+        static getWorkflowPdfCacheHit(itemId) {
+          return this.workflowPdfCacheHitByItem.get(itemId) === true;
+        }
+        static async getWorkflowPdfCacheKey(pdfAttachment, pdfProcessMode) {
+          let signature = String(pdfAttachment.dateModified || pdfAttachment.dateAdded || "");
+          try {
+            const path2 = await pdfAttachment.getFilePathAsync?.();
+            if (path2) {
+              const info = await IOUtils.stat(path2);
+              signature += `:${info.size || 0}:${info.lastModified || 0}`;
             }
+          } catch (error) {
+            ztoolkit.log("[AI-Butler] PDF cache signature fallback:", error);
           }
-          if (pdfAttachments.length === 0) {
-            throw new Error("No PDF attachment found for this item");
+          return `${pdfAttachment.libraryID || 0}:${pdfAttachment.key || pdfAttachment.id}:${pdfProcessMode}:${signature}`;
+        }
+        /**
+         * Reuse a synchronized MinerU cache created by llm-for-zotero for this exact PDF.
+         * The cache attachment must belong to the same parent item and its embedded
+         * metadata must name the current PDF attachment key. Invalid or unavailable
+         * caches are ignored so the normal MinerU/Zotero extraction fallback can run.
+         */
+        static async readLlmForZoteroMineruCache(item, pdfAttachment) {
+          const sourceAttachmentKey = String(pdfAttachment?.key || "").trim();
+          const diagnosticItemId = item?.id;
+          const diagnostics = [];
+          const record = (step, ok, message, extra = {}) => {
+            diagnostics.push({
+              step: `llm-for-zotero-cache:${step}`,
+              ok,
+              message,
+              elapsedMs: 0,
+              ...extra
+            });
+          };
+          const saveDiagnostics = () => {
+            if (diagnosticItemId) this.workflowLlmCacheDiagnosticsByItem.set(diagnosticItemId, diagnostics.slice());
+          };
+          if (!item || !sourceAttachmentKey || typeof item.getAttachments !== "function") {
+            record("preflight", false, "item, PDF attachment key, or attachment enumerator is unavailable");
+            saveDiagnostics();
+            return null;
           }
-          const pdfAttachment = pdfAttachments.sort((a, b2) => {
-            const dateA = new Date(a.dateAdded).getTime();
-            const dateB = new Date(b2.dateAdded).getTime();
-            return dateA - dateB;
-          })[0];
-          ztoolkit.log(
-            `[AI Butler] Selected oldest PDF: ${pdfAttachment.getField("title")} (Added: ${pdfAttachment.dateAdded})`
-          );
-          const currentPdfMode = (pdfProcessMode || getPref("pdfProcessMode") || "base64").trim().toLowerCase();
-          const mineruApiKey = getPref("mineruApiKey") || "";
-          if (currentPdfMode === "mineru" && mineruApiKey && mineruApiKey.trim().length > 0) {
-            ztoolkit.log(
-              "[AI Butler] MinerU pdf process mode selected and API Key detected, routing to MineruClient for extraction..."
-            );
+          let attachmentIds = [];
+          try {
+            attachmentIds = item.getAttachments() || [];
+          } catch (error) {
+            record("enumerate", false, error?.message || String(error));
+            saveDiagnostics();
+            ztoolkit.log("[AI-Butler] Unable to enumerate llm-for-zotero cache attachments", error);
+            return null;
+          }
+          if (!Array.isArray(attachmentIds) || attachmentIds.length === 0) {
+            record("enumerate", false, "parent item has no child attachments");
+            saveDiagnostics();
+            return null;
+          }
+          let attachments = [];
+          try {
+            const loaded = await Zotero.Items.getAsync(attachmentIds);
+            attachments = Array.isArray(loaded) ? loaded.filter(Boolean) : loaded ? [loaded] : [];
+          } catch (error) {
+            record("load-attachments", false, error?.message || String(error), { attachmentCount: attachmentIds.length });
+            saveDiagnostics();
+            ztoolkit.log("[AI-Butler] Unable to load llm-for-zotero cache attachments", error);
+            return null;
+          }
+          const cachePrefix = "[LLM for Zotero] MinerU cache";
+          const candidates = attachments.filter((attachment) => {
+            if (!attachment || attachment.id === pdfAttachment.id || !attachment.isAttachment?.()) return false;
+            const title = String(attachment.getField?.("title") || "");
+            let filename = "";
             try {
-              const { MineruClient: MineruClient2 } = await Promise.resolve().then(() => (init_mineruIntegration(), mineruIntegration_exports));
-              return await MineruClient2.extractMarkdown(item);
-            } catch (e) {
-              ztoolkit.log(
-                "[AI Butler] MinerU extraction failed, returning to Zotero built-in extraction",
-                e
-              );
+              filename = String(attachment.getFilename?.() || "");
+            } catch (_error) {
+            }
+            return title.startsWith(cachePrefix) || filename.startsWith(cachePrefix);
+          }).sort((left, right) => String(right.dateModified || right.dateAdded || "").localeCompare(String(left.dateModified || left.dateAdded || "")));
+          if (candidates.length === 0) {
+            record("find-candidate", false, `no matching cache attachment among ${attachments.length} loaded attachments`);
+            saveDiagnostics();
+            return null;
+          }
+          record("find-candidate", true, `found ${candidates.length} cache attachment candidate(s)`);
+          const findZipEntry = (zip, basename) => {
+            const direct = zip.file(basename);
+            if (direct) return direct;
+            return Object.values(zip.files).find((entry) => !entry.dir && String(entry.name || "").split("/").pop() === basename) || null;
+          };
+          const readNativeZipEntry = (cachePath, basename) => {
+            const zipReader = Components.classes["@mozilla.org/libjar/zip-reader;1"].createInstance(Components.interfaces.nsIZipReader);
+            try {
+              const localFile = Components.classes["@mozilla.org/file/local;1"].createInstance(Components.interfaces.nsIFile);
+              localFile.initWithPath(cachePath);
+              zipReader.open(localFile);
+              let entryName = basename;
+              if (!zipReader.hasEntry(entryName)) {
+                entryName = "";
+                const entries = zipReader.findEntries("*");
+                while (entries.hasMore()) {
+                  const candidateName = entries.getNext();
+                  if (String(candidateName || "").split("/").pop() === basename) {
+                    entryName = candidateName;
+                    break;
+                  }
+                }
+              }
+              if (!entryName || !zipReader.hasEntry(entryName)) return null;
+              const input = zipReader.getInputStream(entryName);
+              const converter = Components.classes["@mozilla.org/intl/converter-input-stream;1"].createInstance(Components.interfaces.nsIConverterInputStream);
+              converter.init(input, "UTF-8", 0, 0);
+              const chunk = {};
+              let output = "";
+              while (converter.readString(65536, chunk) !== 0) output += chunk.value;
+              converter.close();
+              return output;
+            } finally {
+              try {
+                zipReader.close();
+              } catch (_error) {
+              }
+            }
+          };
+          for (const cacheAttachment of candidates) {
+            try {
+              const cachePath = await cacheAttachment.getFilePathAsync?.();
+              if (!cachePath) {
+                record("local-file", false, `cache attachment ${cacheAttachment.key || cacheAttachment.id} has no local file path`);
+                ztoolkit.log(`[AI-Butler] llm-for-zotero MinerU cache is not available locally: ${cacheAttachment.key || cacheAttachment.id}`);
+                continue;
+              }
+              const cacheInfo = await IOUtils.stat(cachePath);
+              if (!cacheInfo?.size || cacheInfo.size > 268435456) {
+                record("local-file", false, `cache attachment ${cacheAttachment.key || cacheAttachment.id} has invalid size ${cacheInfo?.size || 0}`);
+                ztoolkit.log(`[AI-Butler] Ignoring invalid or oversized llm-for-zotero MinerU cache: ${cacheAttachment.key || cacheAttachment.id}`);
+                continue;
+              }
+              const zipBytes = await IOUtils.read(cachePath);
+              let sourceJson = "";
+              let syncJson = "";
+              let markdown = "";
+              try {
+                init_mineruIntegration();
+                if (typeof globalThis.setImmediate === "undefined") {
+                  globalThis.setImmediate = (fn) => setTimeout(fn, 0);
+                }
+                const zip = new import_jszip.default();
+                await zip.loadAsync(zipBytes);
+                const sourceEntry = findZipEntry(zip, "_llm_source.json");
+                const syncEntry = findZipEntry(zip, "_llm_sync.json");
+                const markdownEntry = findZipEntry(zip, "full.md");
+                sourceJson = sourceEntry ? await sourceEntry.async("string") : "";
+                syncJson = syncEntry ? await syncEntry.async("string") : "";
+                markdown = markdownEntry ? await markdownEntry.async("string") : "";
+              } catch (jsZipError) {
+                try {
+                  sourceJson = readNativeZipEntry(cachePath, "_llm_source.json") || "";
+                  syncJson = readNativeZipEntry(cachePath, "_llm_sync.json") || "";
+                  markdown = readNativeZipEntry(cachePath, "full.md") || "";
+                  record("native-zip-fallback", true, `JSZip failed (${jsZipError?.message || String(jsZipError)}); Zotero native ZIP reader succeeded`);
+                } catch (nativeZipError) {
+                  throw new Error(`JSZip failed: ${jsZipError?.message || String(jsZipError)}; Zotero native ZIP reader failed: ${nativeZipError?.message || String(nativeZipError)}`);
+                }
+              }
+              let sourceMetadata = null;
+              let syncMetadata = null;
+              if (sourceJson) {
+                try {
+                  sourceMetadata = JSON.parse(sourceJson);
+                } catch (_error) {
+                }
+              }
+              if (syncJson) {
+                try {
+                  syncMetadata = JSON.parse(syncJson);
+                } catch (_error) {
+                }
+              }
+              const cachedSourceKey = String(sourceMetadata?.attachmentKey || syncMetadata?.sourceAttachmentKey || syncMetadata?.attachmentKey || "").trim();
+              if (cachedSourceKey !== sourceAttachmentKey) {
+                record("source-key", false, `cache ${cacheAttachment.key || cacheAttachment.id} belongs to ${cachedSourceKey || "missing"}; expected ${sourceAttachmentKey}`);
+                ztoolkit.log(`[AI-Butler] Ignoring llm-for-zotero MinerU cache for a different PDF: cache=${cacheAttachment.key || cacheAttachment.id}; expected=${sourceAttachmentKey}; actual=${cachedSourceKey || "missing"}`);
+                continue;
+              }
+              if (!markdown) {
+                record("markdown", false, `cache ${cacheAttachment.key || cacheAttachment.id} has no full.md`);
+                ztoolkit.log(`[AI-Butler] llm-for-zotero MinerU cache has no full.md: ${cacheAttachment.key || cacheAttachment.id}`);
+                continue;
+              }
+              if (!markdown || markdown.trim().length < 100) {
+                record("markdown", false, `cache ${cacheAttachment.key || cacheAttachment.id} full.md is empty or incomplete`);
+                ztoolkit.log(`[AI-Butler] llm-for-zotero MinerU cache full.md is empty or incomplete: ${cacheAttachment.key || cacheAttachment.id}`);
+                continue;
+              }
+              record("hit", true, `reused cache ${cacheAttachment.key || cacheAttachment.id}`, { textLength: markdown.length });
+              saveDiagnostics();
+              ztoolkit.log(`[AI-Butler] Reused llm-for-zotero MinerU cache: pdf=${sourceAttachmentKey}; cache=${cacheAttachment.key || cacheAttachment.id}; chars=${markdown.length}`);
+              return markdown;
+            } catch (error) {
+              record("read-zip", false, `cache ${cacheAttachment.key || cacheAttachment.id}: ${error?.message || String(error)}`);
+              ztoolkit.log(`[AI-Butler] Failed to read llm-for-zotero MinerU cache ${cacheAttachment.key || cacheAttachment.id}; trying the next cache or extractor`, error);
             }
           }
-          const text2 = await this.extractTextFromPDF(pdfAttachment);
-          if (!text2 || text2.trim().length === 0) {
-            throw new Error("Failed to extract text from PDF or PDF is empty");
+          saveDiagnostics();
+          return null;
+        }
+        /** Unified selected-attachment extraction with file-signature cache and same-attachment fallback. */
+        static async extractTextFromSelectedAttachment(item, pdfAttachment, pdfProcessMode) {
+          if (!pdfAttachment) throw new Error("No locally accessible PDF attachment found for this item");
+          const currentPdfMode = (pdfProcessMode || getPref("pdfProcessMode") || "base64").trim().toLowerCase();
+          const cacheKey = await this.getWorkflowPdfCacheKey(pdfAttachment, currentPdfMode);
+          this.workflowPdfCacheHitByItem.set(item.id, false);
+          const cached = this.workflowPdfTextCache.get(cacheKey);
+          if (cached) {
+            this.workflowPdfCacheHitByItem.set(item.id, true);
+            ztoolkit.log(`[AI-Butler] PDF cache hit: ${pdfAttachment.key || pdfAttachment.id}; chars=${cached.length}`);
+            return cached;
           }
-          return text2;
+          const inFlight = this.workflowPdfTextInFlight.get(cacheKey);
+          if (inFlight) {
+            this.workflowPdfCacheHitByItem.set(item.id, true);
+            ztoolkit.log(`[AI-Butler] Waiting for in-flight PDF extraction: ${pdfAttachment.key || pdfAttachment.id}`);
+            return await inFlight;
+          }
+          const extraction = (async () => {
+            ztoolkit.log(`[AI Butler] PDF cache miss; extracting ${pdfAttachment.getField("title")} (mode=${currentPdfMode})`);
+            const sharedMineruCacheText = await this.readLlmForZoteroMineruCache(item, pdfAttachment);
+            if (sharedMineruCacheText) {
+              this.workflowPdfCacheHitByItem.set(item.id, true);
+              return sharedMineruCacheText;
+            }
+            const mineruApiKey = getPref("mineruApiKey") || "";
+            if (currentPdfMode === "mineru" && mineruApiKey && mineruApiKey.trim().length > 0) {
+              try {
+                const { MineruClient: MineruClient2 } = await Promise.resolve().then(() => (init_mineruIntegration(), mineruIntegration_exports));
+                return await MineruClient2.extractMarkdown(item, pdfAttachment);
+              } catch (error) {
+                if (isAbortError(error)) throw error;
+                ztoolkit.log("[AI Butler] MinerU extraction failed, returning to Zotero built-in extraction", error);
+              }
+            }
+            try {
+              const text2 = await this.extractTextFromPDF(pdfAttachment);
+              if (!text2 || text2.trim().length === 0) throw new Error("Failed to extract text from PDF or PDF is empty");
+              return text2;
+            } catch (error) {
+              const sharedCacheDiagnostics = this.workflowLlmCacheDiagnosticsByItem.get(item.id) || [];
+              if (error instanceof PDFTextExtractionError && sharedCacheDiagnostics.length > 0) {
+                error.diagnostics.steps.unshift(...sharedCacheDiagnostics);
+                error.diagnosticText = this.formatDiagnostics(error.diagnostics);
+                const cacheFailureSummary = sharedCacheDiagnostics.map((step) => `${step.step}: ${step.message || (step.ok ? "ok" : "failed")}`).join("; ");
+                error.message = `${error.message}; llm-for-zotero cache diagnostics: ${cacheFailureSummary}`;
+              }
+              throw error;
+            }
+          })();
+          this.workflowPdfTextInFlight.set(cacheKey, extraction);
+          try {
+            const text2 = await extraction;
+            if (text2 && text2.trim()) this.workflowPdfTextCache.set(cacheKey, text2);
+            return text2;
+          } finally {
+            this.workflowPdfTextInFlight.delete(cacheKey);
+          }
+        }
+        /** Reuse the same selected PDF/MinerU result for L1, L2 and L3. */
+        static async extractTextFromItem(item, pdfProcessMode) {
+          const pdfAttachment = await this.getFirstAccessiblePDFAttachment(item);
+          return await this.extractTextFromSelectedAttachment(item, pdfAttachment, pdfProcessMode);
         }
         /**
          * 从 PDF 附件中提取文本内容
@@ -7035,6 +7280,33 @@ Generate an academic infographic poster.`;
           const startedAtMs = Date.now();
           const diagnostics = this.createTextExtractionDiagnostics(pdfAttachment);
           try {
+            const parentItemId = pdfAttachment.parentID;
+            if (parentItemId) {
+              try {
+                const parentItem = await Zotero.Items.getAsync(parentItemId);
+                const sharedMineruCacheText = parentItem ? await this.readLlmForZoteroMineruCache(parentItem, pdfAttachment) : null;
+                if (sharedMineruCacheText) {
+                  this.workflowPdfCacheHitByItem.set(parentItemId, true);
+                  diagnostics.steps.push({
+                    step: "llm-for-zotero-cache:direct-pdf-fallback",
+                    ok: true,
+                    textLength: sharedMineruCacheText.length,
+                    message: "reused synchronized MinerU cache before Zotero full-text extraction",
+                    elapsedMs: Date.now() - startedAtMs
+                  });
+                  return sharedMineruCacheText;
+                }
+                const sharedCacheDiagnostics = this.workflowLlmCacheDiagnosticsByItem.get(parentItemId) || [];
+                diagnostics.steps.push(...sharedCacheDiagnostics);
+              } catch (cacheError) {
+                diagnostics.steps.push({
+                  step: "llm-for-zotero-cache:direct-pdf-fallback",
+                  ok: false,
+                  message: cacheError?.message || String(cacheError),
+                  elapsedMs: Date.now() - startedAtMs
+                });
+              }
+            }
             const path2 = await pdfAttachment.getFilePathAsync();
             diagnostics.filePath = path2 || void 0;
             if (!path2) {
@@ -7371,10 +7643,11 @@ Generate an academic infographic poster.`;
          * ```
          */
         static cleanText(text2) {
-          text2 = text2.replace(/\s+/g, " ");
-          text2 = text2.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, "");
           text2 = text2.replace(/\r\n/g, "\n");
           text2 = text2.replace(/\r/g, "\n");
+          text2 = text2.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, "");
+          text2 = text2.replace(/[\t\f\v ]+/g, " ");
+          text2 = text2.replace(/ *\n */g, "\n");
           text2 = text2.replace(/\n{3,}/g, "\n\n");
           return text2.trim();
         }
@@ -7409,12 +7682,11 @@ Generate an academic infographic poster.`;
           if (text2.length <= maxLength) {
             return text2;
           }
-          const truncated = text2.substring(0, maxLength);
-          const lastPeriod = truncated.lastIndexOf(".");
-          if (lastPeriod > maxLength * 0.8) {
-            return truncated.substring(0, lastPeriod + 1);
-          }
-          return truncated + "...";
+          const marker = `\n\n[AI-BUTLER INPUT TRUNCATED: original ${text2.length} characters; retained beginning and ending sections]\n\n`;
+          const available = Math.max(0, maxLength - marker.length);
+          const headLength = Math.floor(available * 0.8);
+          const tailLength = available - headLength;
+          return text2.slice(0, headLength) + marker + text2.slice(text2.length - tailLength);
         }
         /**
          * 将 PDF 文件转换为 Base64 编码字符串
@@ -7435,27 +7707,12 @@ Generate an academic infographic poster.`;
          * ```
          */
         static async extractBase64FromItem(item) {
-          const attachments = item.getAttachments();
-          if (attachments.length === 0) {
-            throw new Error("No attachments found for this item");
+          const pdfAttachment = await this.getFirstAccessiblePDFAttachment(item);
+          if (!pdfAttachment) {
+            throw new Error("No locally accessible PDF attachment found for this item");
           }
-          const pdfAttachments = [];
-          for (const attachmentID of attachments) {
-            const attachment = await Zotero.Items.getAsync(attachmentID);
-            if (attachment.attachmentContentType === "application/pdf") {
-              pdfAttachments.push(attachment);
-            }
-          }
-          if (pdfAttachments.length === 0) {
-            throw new Error("No PDF attachment found for this item");
-          }
-          const pdfAttachment = pdfAttachments.sort((a, b2) => {
-            const dateA = new Date(a.dateAdded).getTime();
-            const dateB = new Date(b2.dateAdded).getTime();
-            return dateA - dateB;
-          })[0];
           ztoolkit.log(
-            `[AI Butler] Selected oldest PDF (Base64): ${pdfAttachment.getField("title")} (Added: ${pdfAttachment.dateAdded})`
+            `[AI Butler] Selected locally accessible PDF (Base64): ${pdfAttachment.getField("title")} (Added: ${pdfAttachment.dateAdded})`
           );
           const pdfPath = await pdfAttachment.getFilePathAsync();
           if (!pdfPath) {
@@ -8638,6 +8895,12 @@ Generate an academic infographic poster.`;
     }
     return createAbortError(signal);
   }
+  function createIncompleteStreamError(partialOutput) {
+    const error = new Error("Incomplete streamed response; partial output was shown but was not saved as a completed note");
+    error.name = "IncompleteStreamError";
+    error.partialOutput = String(partialOutput || "");
+    return error;
+  }
   function bindAbortSignal(signal, xmlhttp, onAbort) {
     if (!signal) return () => {
     };
@@ -8844,7 +9107,7 @@ Generate an academic infographic poster.`;
                   if (isAbortError(currentAbortError, options.abortSignal)) {
                     throw normalizeAbortError(currentAbortError, options.abortSignal);
                   }
-                  if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+                  if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
                   throw currentAbortError;
                 }
                 if (isAbortError(error, options.abortSignal)) {
@@ -8862,7 +9125,7 @@ Generate an academic infographic poster.`;
                   }
                 } catch {
                 }
-                if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+                if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
                 throw new Error(errorMessage);
               } finally {
                 cleanupAbortSignal2?.();
@@ -9050,7 +9313,7 @@ Generate an academic infographic poster.`;
               }
               if (abortedDueToError && errorFromProgress) throw errorFromProgress;
               if (streamComplete && gotAnyDelta) return chunks.join("");
-              if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+              if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
               let errorMessage = "\u672A\u77E5\u9519\u8BEF";
               try {
                 const responseText = error?.xmlhttp?.response || error?.xmlhttp?.responseText;
@@ -9286,7 +9549,7 @@ ${extraHistoryText}`
                 if (isAbortError(abortError2, options.abortSignal)) {
                   throw normalizeAbortError(abortError2, options.abortSignal);
                 }
-                if (gotAnyDelta2 && chunks2.length > 0) return chunks2.join("");
+                if (gotAnyDelta2 && chunks2.length > 0) throw createIncompleteStreamError(chunks2.join(""));
                 throw abortError2;
               }
               if (isAbortError(error, options.abortSignal)) {
@@ -9304,7 +9567,7 @@ ${extraHistoryText}`
                 }
               } catch {
               }
-              if (gotAnyDelta2 && chunks2.length > 0) return chunks2.join("");
+              if (gotAnyDelta2 && chunks2.length > 0) throw createIncompleteStreamError(chunks2.join(""));
               throw new Error(errorMessage);
             } finally {
               cleanupAbortSignal2?.();
@@ -9451,7 +9714,7 @@ ${extraHistoryText}`
                 throw normalizeAbortError(abortError, options.abortSignal);
               }
               if (gotAnyDelta && chunks.length > 0) {
-                return chunks.join("");
+                throw createIncompleteStreamError(chunks.join(""));
               }
               throw abortError;
             }
@@ -9475,7 +9738,7 @@ ${extraHistoryText}`
               statusText: error?.xmlhttp?.statusText,
               message: errorMessage
             });
-            if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+            if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
             throw new Error(errorMessage);
           } finally {
             cleanupAbortSignal?.();
@@ -9766,7 +10029,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
               if (isAbortError(abortError, options.abortSignal)) {
                 throw normalizeAbortError(abortError, options.abortSignal);
               }
-              if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+              if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
               throw abortError;
             }
             if (isAbortError(error, options.abortSignal)) {
@@ -9784,7 +10047,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
               }
             } catch {
             }
-            if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+            if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
             throw new Error(errorMessage);
           } finally {
             cleanupAbortSignal?.();
@@ -9954,6 +10217,9 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
             let processedLength = 0;
             let partialLine = "";
             let gotAnyDelta = false;
+            let sawDone = false;
+            let finishReason = "";
+            let protocolError = null;
             let abortError2 = null;
             let cleanupAbortSignal2;
             try {
@@ -9998,9 +10264,12 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
                         for (const raw of parts) {
                           if (raw.indexOf("data:") !== 0) continue;
                           const jsonStr = raw.replace(/^data:\s*/, "").trim();
-                          if (!jsonStr || jsonStr === "[DONE]") continue;
+                          if (!jsonStr) continue;
+                          if (jsonStr === "[DONE]") { sawDone = true; continue; }
                           try {
                             const evt = JSON.parse(jsonStr);
+                            const choice = evt?.choices?.[0];
+                            if (typeof choice?.finish_reason === "string" && choice.finish_reason) finishReason = choice.finish_reason;
                             const delta = evt?.choices?.[0]?.delta?.content;
                             if (typeof delta === "string" && delta.length > 0) {
                               gotAnyDelta = true;
@@ -10017,7 +10286,8 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
                                 );
                               }
                             }
-                          } catch {
+                          } catch (error) {
+                            protocolError = new Error(`OpenAI-compatible SSE protocol error: ${error instanceof Error ? error.message : String(error)}`);
                           }
                         }
                       }
@@ -10042,7 +10312,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
                 if (isAbortError(abortError2, options.abortSignal)) {
                   throw normalizeAbortError(abortError2, options.abortSignal);
                 }
-                if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+                if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
                 throw abortError2;
               }
               if (isAbortError(error, options.abortSignal)) {
@@ -10060,12 +10330,16 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
                 }
               } catch {
               }
-              if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+              if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
               throw new Error(errorMessage);
             } finally {
               cleanupAbortSignal2?.();
             }
-            return chunks.join("");
+            const streamed = chunks.join("");
+            if (protocolError) throw createIncompleteStreamError(streamed);
+            if (finishReason && finishReason !== "stop") throw createIncompleteStreamError(streamed);
+            if (!sawDone && finishReason !== "stop") throw createIncompleteStreamError(streamed);
+            return streamed;
           }
           let abortError = null;
           let cleanupAbortSignal;
@@ -10088,8 +10362,12 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
             });
             throwIfAborted(options.abortSignal);
             const data = res.response || res;
-            const text2 = data?.choices?.[0]?.message?.content || "";
+            const choice = data?.choices?.[0];
+            const text2 = choice?.message?.content || "";
+            const finishReason = String(choice?.finish_reason || "");
             const result = typeof text2 === "string" ? text2 : JSON.stringify(text2);
+            if (finishReason && finishReason !== "stop") throw createIncompleteStreamError(result);
+            if (!finishReason) throw createIncompleteStreamError(result);
             if (onProgress && result) await onProgress(result);
             return result;
           } catch (e) {
@@ -10246,7 +10524,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
               if (isAbortError(abortError, options.abortSignal)) {
                 throw normalizeAbortError(abortError, options.abortSignal);
               }
-              if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+              if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
               throw abortError;
             }
             if (isAbortError(error, options.abortSignal)) {
@@ -10264,7 +10542,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
               }
             } catch {
             }
-            if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+            if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
             throw new Error(errorMessage);
           } finally {
             cleanupAbortSignal?.();
@@ -10530,7 +10808,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
               if (isAbortError(abortError, options.abortSignal)) {
                 throw normalizeAbortError(abortError, options.abortSignal);
               }
-              if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+              if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
               throw abortError;
             }
             if (isAbortError(error, options.abortSignal)) {
@@ -10548,7 +10826,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
               }
             } catch {
             }
-            if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+            if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
             throw new Error(errorMessage);
           } finally {
             cleanupAbortSignal?.();
@@ -10727,7 +11005,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
               }
             } catch {
             }
-            if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+            if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
             throw new Error(errorMessage);
           } finally {
             cleanupAbortSignal?.();
@@ -10891,7 +11169,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
                 throw normalizeAbortError(abortError, options.abortSignal);
               }
               if (gotAnyDelta && chunks.length > 0) {
-                return chunks.join("");
+                throw createIncompleteStreamError(chunks.join(""));
               }
               throw abortError;
             }
@@ -10915,7 +11193,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
               statusText: error?.xmlhttp?.statusText,
               message: errorMessage
             });
-            if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+            if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
             throw new Error(errorMessage);
           } finally {
             cleanupAbortSignal?.();
@@ -11286,7 +11564,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
               }
             } catch {
             }
-            if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+            if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
             throw new Error(errorMessage);
           } finally {
             cleanupAbortSignal?.();
@@ -11472,7 +11750,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
               }
             } catch {
             }
-            if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+            if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
             throw new Error(errorMessage);
           } finally {
             cleanupAbortSignal?.();
@@ -11956,7 +12234,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
               if (isAbortError(abortError, options.abortSignal)) {
                 throw normalizeAbortError(abortError, options.abortSignal);
               }
-              if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+              if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
               throw abortError;
             }
             if (isAbortError(error, options.abortSignal)) {
@@ -11974,7 +12252,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
               }
             } catch {
             }
-            if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+            if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
             throw new Error(errorMessage);
           } finally {
             cleanupAbortSignal?.();
@@ -12369,14 +12647,14 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
               if (isAbortError(abortError, options.abortSignal)) {
                 throw normalizeAbortError(abortError, options.abortSignal);
               }
-              if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+              if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
               throw abortError;
             }
             if (isAbortError(error, options.abortSignal)) {
               throw normalizeAbortError(error, options.abortSignal);
             }
             const errorMessage = error?.message || "OpenRouter request failed";
-            if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+            if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
             throw new Error(errorMessage);
           } finally {
             cleanupAbortSignal?.();
@@ -12648,7 +12926,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
               }
             } catch {
             }
-            if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+            if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
             throw new Error(errorMessage);
           } finally {
             cleanupAbortSignal?.();
@@ -12821,7 +13099,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
                 throw normalizeAbortError(abortError, options.abortSignal);
               }
               if (gotAnyDelta && chunks.length > 0) {
-                return chunks.join("");
+                throw createIncompleteStreamError(chunks.join(""));
               }
               throw abortError;
             }
@@ -12845,7 +13123,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
               statusText: error?.xmlhttp?.statusText,
               message: errorMessage
             });
-            if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+            if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
             throw new Error(errorMessage);
           } finally {
             cleanupAbortSignal?.();
@@ -13039,16 +13317,6 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
                     }
                   }
                 }
-                if (item?.type === "reasoning" && item?.summary) {
-                  const summary = item.summary;
-                  if (Array.isArray(summary)) {
-                    for (const s of summary) {
-                      if (s?.type === "summary_text" && s?.text) {
-                        texts.push(s.text);
-                      }
-                    }
-                  }
-                }
               }
               if (texts.length > 0) return texts.join("");
             }
@@ -13219,7 +13487,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
               }
             } catch {
             }
-            if (gotAnyDelta && chunks.length > 0) return chunks.join("");
+            if (gotAnyDelta && chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
             throw new Error(errorMessage);
           } finally {
             cleanupAbortSignal?.();
@@ -13567,7 +13835,7 @@ ${rawResponse}`;
               throw normalizeAbortError(error, options.abortSignal);
             }
             if (abortError && chunks.length === 0) throw abortError;
-            if (chunks.length > 0) return chunks.join("");
+            if (chunks.length > 0) throw createIncompleteStreamError(chunks.join(""));
             throw this.toRequestError(error, "Ollama \u6D41\u5F0F\u8BF7\u6C42\u5931\u8D25");
           } finally {
             cleanupAbortSignal?.();
@@ -13706,6 +13974,8 @@ ${rawResponse}`;
         endpointName;
         providerId;
         originalError;
+        diagnostics;
+        diagnosticText;
         constructor(endpoint, error) {
           super(error.message);
           this.name = "LLMApiCallError";
@@ -13713,6 +13983,8 @@ ${rawResponse}`;
           this.endpointName = endpoint.name;
           this.providerId = endpoint.providerType;
           this.originalError = error;
+          this.diagnostics = error?.diagnostics;
+          this.diagnosticText = error?.diagnosticText;
           this.stack = error.stack || this.stack;
         }
       };
@@ -13723,6 +13995,8 @@ ${rawResponse}`;
         endpointId;
         endpointName;
         providerId;
+        diagnostics;
+        diagnosticText;
         constructor(attempts, lastError) {
           super(lastError?.message || "All configured LLM endpoints failed.");
           this.name = "LLMApiExhaustedError";
@@ -13732,6 +14006,8 @@ ${rawResponse}`;
           this.endpointId = apiError?.endpointId;
           this.endpointName = apiError?.endpointName;
           this.providerId = apiError?.providerId;
+          this.diagnostics = apiError?.diagnostics || apiError?.originalError?.diagnostics;
+          this.diagnosticText = apiError?.diagnosticText || apiError?.originalError?.diagnosticText;
           this.stack = lastError?.stack || this.stack;
         }
       };
@@ -14342,7 +14618,11 @@ ${this.normalizeText(text3)}`;
             );
             return { mode: "single", content, isBase64: true, warnings };
           }
-          const text2 = policy === "mineru" && input.item ? await PDFExtractor.extractTextFromItem(input.item, "mineru") : await PDFExtractor.extractTextFromAttachment(input.attachment);
+          const text2 = await PDFExtractor.extractTextFromSelectedAttachment(
+            input.item || input.attachment,
+            input.attachment,
+            policy
+          );
           return {
             mode: "single",
             content: this.normalizeText(text2),
@@ -31071,6 +31351,24 @@ ${jsonMarker}
           scope: "item"
         },
         {
+          id: "supplementL1DataAvailability",
+          label: "补充 L1 数据开放标签",
+          description: "文献右键：已有 L1 但缺少 Data 标签时，只补标签，不新增笔记",
+          scope: "item"
+        },
+        {
+          id: "repairManagedTags",
+          label: "修复重复或格式相似的 AI 标签",
+          description: "文献右键：批量统一插件受管标签的重复或格式变体，不处理用户标签",
+          scope: "item"
+        },
+        {
+          id: "organizeWorkflowNotes",
+          label: "整理 L1/L2/L3 AI 笔记",
+          description: "文献右键：每层保留结构最完整的一个版本，并按 L3、L2、L1 排列；旧版本移入废纸篓",
+          scope: "item"
+        },
+        {
           id: "generateSummary",
           label: "\u53EC\u5524 AI \u7BA1\u5BB6\u8FDB\u884C\u5206\u6790",
           description: "\u6587\u732E\u53F3\u952E\uFF1A\u52A0\u5165 AI \u603B\u7ED3\u4EFB\u52A1\u961F\u5217",
@@ -31116,6 +31414,24 @@ ${jsonMarker}
           id: "collectionL1Summary",
           label: "L1 批量文献总结并打标签",
           description: "分类右键：对该分类内的 PDF 文献运行 L1；已有 AI 笔记会追加结果",
+          scope: "collection"
+        },
+        {
+          id: "collectionSupplementL1DataAvailability",
+          label: "补充已有 L1 的数据开放标签",
+          description: "分类右键：扫描已有 L1 且缺少 Data 标签的文献，只补数据开放标签",
+          scope: "collection"
+        },
+        {
+          id: "collectionRepairManagedTags",
+          label: "批量修复重复或格式相似的 AI 标签",
+          description: "分类右键：预览并统一插件受管标签的格式变体，不处理星级和用户标签",
+          scope: "collection"
+        },
+        {
+          id: "collectionRatedWorkflowRepair",
+          label: "扫描已评分文献并补齐 L1/L2/L3",
+          description: "分类右键：按星级扫描并仅补做缺失的 L1、L2、L3；已完成结果不会重跑",
           scope: "collection"
         },
         {
@@ -31168,6 +31484,9 @@ ${jsonMarker}
       SIDEBAR_MODULE_IDS = SIDEBAR_MODULES.map((module) => module.id);
       DEFAULT_CONTEXT_MENU_ITEM_VISIBILITY = {
         workflowPreset: true,
+        supplementL1DataAvailability: true,
+        repairManagedTags: true,
+        organizeWorkflowNotes: true,
         generateSummary: true,
         multiRoundReanalyze: true,
         dashboard: true,
@@ -31176,6 +31495,9 @@ ${jsonMarker}
         mindmap: true,
         fillTable: true,
         collectionL1Summary: true,
+        collectionSupplementL1DataAvailability: true,
+        collectionRepairManagedTags: true,
+        collectionRatedWorkflowRepair: true,
         literatureReview: true,
         clearCollectionAiNotes: true
       };
@@ -31197,6 +31519,9 @@ ${jsonMarker}
       ];
       DEFAULT_CONTEXT_MENU_ITEM_ORDER = [
         "workflowPreset",
+        "supplementL1DataAvailability",
+        "repairManagedTags",
+        "organizeWorkflowNotes",
         "generateSummary",
         "multiRoundReanalyze",
         "dashboard",
@@ -31205,6 +31530,9 @@ ${jsonMarker}
         "mindmap",
         "fillTable",
         "collectionL1Summary",
+        "collectionSupplementL1DataAvailability",
+        "collectionRepairManagedTags",
+        "collectionRatedWorkflowRepair",
         "literatureReview",
         "clearCollectionAiNotes"
       ];
@@ -31263,13 +31591,15 @@ ${jsonMarker}
           const fillPrompt = getPref("tableFillPrompt") || DEFAULT_TABLE_FILL_PROMPT;
           const concurrency = getPref("tableFillConcurrency") || 3;
           const itemPdfPairs = [];
+          const parentSeen = /* @__PURE__ */ new Set();
           for (const pdfAtt of pdfAttachments) {
             const parentID = pdfAtt.parentID;
-            if (parentID) {
-              const parentItem = await Zotero.Items.getAsync(parentID);
-              if (parentItem) {
-                itemPdfPairs.push({ parentItem, pdfAttachment: pdfAtt });
-              }
+            if (!parentID) continue;
+            if (parentSeen.has(parentID)) throw new Error(`Multiple selected PDF attachments belong to the same Zotero item (${parentID}); choose one attachment explicitly before generating a review`);
+            const parentItem = await Zotero.Items.getAsync(parentID);
+            if (parentItem) {
+              parentSeen.add(parentID);
+              itemPdfPairs.push({ parentItem, pdfAttachment: pdfAtt });
             }
           }
           progressCallback?.("\u6B63\u5728\u9010\u7BC7\u586B\u8868...", 10);
@@ -31284,6 +31614,7 @@ ${jsonMarker}
               progressCallback?.(`\u6B63\u5728\u586B\u8868 (${done}/${total})...`, progress);
             }
           );
+          if (tableResults.size === 0) throw new Error("All literature table tasks failed; review note was not created");
           progressCallback?.("\u6B63\u5728\u6C47\u603B\u8868\u683C...", 65);
           const aggregated = this.aggregateTableContents(tableResults, itemPdfPairs);
           progressCallback?.("\u6B63\u5728\u751F\u6210\u7EFC\u8FF0...", 70);
@@ -31301,7 +31632,8 @@ ${aggregated}`;
           let summaryContent = reviewResponse.text;
           summaryContent = await this.postProcessCitations(
             summaryContent,
-            itemPdfPairs
+            itemPdfPairs,
+            tableResults
           );
           progressCallback?.("\u6B63\u5728\u521B\u5EFA\u7B14\u8BB0...", 90);
           const reviewNote = await this.createStandaloneReviewNote(
@@ -31311,6 +31643,7 @@ ${aggregated}`;
             LLMNoteMetadataService.fromResponse("literature-review", reviewResponse)
           );
           for (const { parentItem } of itemPdfPairs) {
+            if (!tableResults.has(parentItem.id)) continue;
             try {
               const existingTags = parentItem.getTags?.() || [];
               if (!existingTags.some((t) => t.tag === "AI-Reviewed")) {
@@ -31346,7 +31679,8 @@ ${aggregated}`;
           const parentSeen = /* @__PURE__ */ new Set();
           for (const pdfAtt of pdfAttachments) {
             const parentID = pdfAtt.parentID;
-            if (!parentID || parentSeen.has(parentID)) continue;
+            if (!parentID) continue;
+            if (parentSeen.has(parentID)) throw new Error(`Multiple selected PDF attachments belong to the same Zotero item (${parentID}); choose one attachment explicitly before generating a review`);
             const parentItem = await Zotero.Items.getAsync(parentID);
             if (parentItem) {
               parentSeen.add(parentID);
@@ -31383,6 +31717,7 @@ ${aggregated}`;
             tableResults,
             selectedTableEntries
           );
+          if (filteredTableResults.size === 0) throw new Error("No successful literature table results; answer note was not created");
           progressCallback?.("\u6B63\u5728\u6C47\u603B\u8868\u683C...", 65);
           const aggregated = this.aggregateTableContents(
             filteredTableResults,
@@ -31405,7 +31740,8 @@ ${aggregated}`;
           let answerContent = answerResponse.text;
           answerContent = await this.postProcessCitations(
             answerContent,
-            itemPdfPairs
+            itemPdfPairs,
+            filteredTableResults
           );
           progressCallback?.("\u6B63\u5728\u521B\u5EFA\u7B14\u8BB0...", 90);
           const note = await this.createStandaloneReviewNote(
@@ -31456,6 +31792,24 @@ ${aggregated}`;
           }
           return filtered.join("\n");
         }
+        static isUsableTableResult(tableContent) {
+          const source = String(tableContent || "").trim();
+          if (!source) return false;
+          const rows = this.extractTableDataRows(source);
+          if (rows.length > 0) {
+            return rows.some((row) => this.parseMarkdownTableCells(row).some((cell) => /[\p{L}\p{N}]/u.test(cell)));
+          }
+          if (source.split(/\r?\n/).some((line) => line.trim().startsWith("|"))) return false;
+          const plain = source.replace(/^\s*#{1,6}.*$/gm, "").replace(/^\s*[-:| ]+\s*$/gm, "").trim();
+          return /[\p{L}\p{N}]/u.test(plain) && !/^(?:error|failed|failure|exception|timeout|cancelled?)\b/i.test(plain);
+        }
+        static filterUsableTableResults(tableResults) {
+          const filtered = /* @__PURE__ */ new Map();
+          for (const [itemId, tableContent] of tableResults || []) {
+            if (this.isUsableTableResult(tableContent)) filtered.set(itemId, tableContent);
+          }
+          return filtered;
+        }
         static filterTableResultsByEntries(tableResults, selectedEntries) {
           if (selectedEntries.length === 0) return tableResults;
           const selectedEntrySet = new Set(
@@ -31464,10 +31818,8 @@ ${aggregated}`;
           if (selectedEntrySet.size === 0) return tableResults;
           const filteredResults = /* @__PURE__ */ new Map();
           for (const [itemId, tableContent] of tableResults) {
-            filteredResults.set(
-              itemId,
-              this.filterSingleTableByEntries(tableContent, selectedEntrySet)
-            );
+            const filtered = this.filterSingleTableByEntries(tableContent, selectedEntrySet);
+            if (this.isUsableTableResult(filtered)) filteredResults.set(itemId, filtered);
           }
           return filteredResults;
         }
@@ -31508,14 +31860,7 @@ ${entryList}
               dataRows.push(line);
             }
           }
-          if (dataRows.length > 0) return dataRows;
-          const nonSeparator = lines.filter(
-            (line) => !this.isMarkdownSeparatorRow(this.parseMarkdownTableCells(line))
-          );
-          if (nonSeparator.length > 1) {
-            return nonSeparator.slice(1);
-          }
-          return nonSeparator.length === 1 ? nonSeparator : [];
+          return dataRows;
         }
         static extractRowEntryName(row) {
           const cells = this.parseMarkdownTableCells(row);
@@ -31598,6 +31943,7 @@ ${entryList}
                   appendTemplate,
                   appendedEntries
                 );
+                if (!this.isUsableTableResult(mergedTable)) throw new Error("Table result is empty or has no usable evidence rows");
                 await this.saveTableNote(task.parentItem, mergedTable, true);
                 results.set(task.parentItem.id, mergedTable);
               } catch (error) {
@@ -31605,8 +31951,8 @@ ${entryList}
                   `[AI-Butler] \u8FFD\u52A0\u586B\u8868\u5931\u8D25: ${task.parentItem.getField("title")}`,
                   error
                 );
-                const fallback = await this.findTableNote(task.parentItem) || `(\u8FFD\u52A0\u586B\u8868\u5931\u8D25: ${error instanceof Error ? error.message : String(error)})`;
-                results.set(task.parentItem.id, fallback);
+                const fallback = await this.findTableNote(task.parentItem);
+                if (this.isUsableTableResult(fallback)) results.set(task.parentItem.id, fallback);
               }
               completed++;
               progressCallback?.(completed, total);
@@ -31764,6 +32110,7 @@ ${entryList}
          * @returns 合并后的 Markdown 文档
          */
         static aggregateTableContents(tableResults, itemPdfPairs) {
+          tableResults = this.filterUsableTableResults(tableResults);
           const itemMap = /* @__PURE__ */ new Map();
           if (itemPdfPairs) {
             for (const { parentItem } of itemPdfPairs) {
@@ -31817,8 +32164,10 @@ ${entryList}
           let globalHeader = "";
           const parts = [];
           let index = 1;
-          for (const [itemId, tableContent] of tableResults) {
-            const parentItem = itemMap.get(itemId);
+          for (const { parentItem } of itemPdfPairs || []) {
+            const itemId = parentItem.id;
+            const tableContent = tableResults.get(itemId);
+            if (!tableContent) continue;
             let label;
             if (parentItem) {
               const author = extractAuthorSurname(parentItem);
@@ -31875,6 +32224,12 @@ ${globalHeader}
          * @returns 文献ID → 表格内容的映射
          */
         static async fillTablesInParallel(items, tableTemplate, fillPrompt, concurrency, options, progressCallback) {
+          const identities = new Set();
+          for (const task of items) {
+            const parentId = task.parentItem?.id;
+            if (identities.has(parentId)) throw new Error(`Duplicate parent item in review input (${parentId}); attachment results would overwrite each other`);
+            identities.add(parentId);
+          }
           const results = /* @__PURE__ */ new Map();
           let completed = 0;
           const total = items.length;
@@ -31890,7 +32245,7 @@ ${globalHeader}
               try {
                 if (strategy === "skip" && !forceFillExisting) {
                   const existing = await this.findTableNote(task.parentItem);
-                  if (existing) {
+                  if (this.isUsableTableResult(existing)) {
                     results.set(task.parentItem.id, existing);
                     completed++;
                     progressCallback?.(completed, total);
@@ -31903,6 +32258,7 @@ ${globalHeader}
                   tableTemplate,
                   fillPrompt
                 );
+                if (!this.isUsableTableResult(table)) throw new Error("Table result is empty or has no usable evidence rows");
                 await this.saveTableNote(task.parentItem, table, forceOverwriteSave);
                 results.set(task.parentItem.id, table);
               } catch (error) {
@@ -31910,10 +32266,7 @@ ${globalHeader}
                   `[AI-Butler] \u586B\u8868\u5931\u8D25: ${task.parentItem.getField("title")}`,
                   error
                 );
-                results.set(
-                  task.parentItem.id,
-                  `(\u586B\u8868\u5931\u8D25: ${error instanceof Error ? error.message : String(error)})`
-                );
+                ztoolkit.log(`[AI-Butler] Table result omitted after failure: ${task.parentItem.id}`);
               }
               completed++;
               progressCallback?.(completed, total);
@@ -32204,15 +32557,27 @@ ${combinedContent}`;
          * @param itemPdfPairs 文献条目列表（顺序与 aggregateTableContents 中的编号一致）
          * @returns 处理后的正文
          */
-        static async postProcessCitations(content, itemPdfPairs) {
+        static async postProcessCitations(content, itemPdfPairs, includedResults) {
           if (itemPdfPairs.length === 0) return content;
           const numToUri = /* @__PURE__ */ new Map();
-          itemPdfPairs.forEach(({ parentItem }, idx) => {
+          const validResults = includedResults ? this.filterUsableTableResults(includedResults) : null;
+          const includedPairs = validResults ? itemPdfPairs.filter(({ parentItem }) => validResults.has(parentItem.id)) : itemPdfPairs;
+          for (let idx = 0; idx < includedPairs.length; idx++) {
+            const { parentItem } = includedPairs[idx];
             const itemKey = parentItem.key || "";
-            if (itemKey) {
-              numToUri.set(idx + 1, `zotero://select/library/items/${itemKey}`);
+            if (!itemKey) continue;
+            let scope = "library";
+            try {
+              const library = Zotero.Libraries.get(parentItem.libraryID);
+              if (library?.libraryType === "group") {
+                const group = Zotero.Groups.getByLibraryID(parentItem.libraryID);
+                if (group?.id) scope = `groups/${group.id}`;
+              }
+            } catch (error) {
+              ztoolkit.log("[AI-Butler] Unable to resolve citation library scope; using personal library route", error);
             }
-          });
+            numToUri.set(idx + 1, `zotero://select/${scope}/items/${itemKey}`);
+          }
           if (numToUri.size === 0) return content;
           const result = content.replace(
             /\[(\d+)\](?!\()/g,
@@ -32324,12 +32689,17 @@ ${combinedContent}`;
                 );
               }
             }
-            const prefMode = llmService_default.getEffectivePdfProcessMode();
+            const configuredWorkflowLevel = String(options?.workflowLevel || "").trim().toUpperCase();
+            const inferredWorkflowLevel = configuredWorkflowLevel || (/\[L2\]\s*Evidence\s*Card/i.test(String(options?.prompt || "")) ? "L2" : "");
+            const inferredEndpointName = inferredWorkflowLevel ? getWorkflowEndpointName(inferredWorkflowLevel) : "";
+            const endpointId = options?.endpointId || (inferredEndpointName ? LLMEndpointManager.getEndpoints().find((endpoint) => endpoint.name === inferredEndpointName)?.id : void 0);
+            const fixedEndpoint = endpointId ? LLMEndpointManager.getEndpoint(endpointId) : void 0;
+            const prefMode = llmService_default.getEffectivePdfProcessMode(fixedEndpoint);
             const pdfAttachmentMode = getPref("pdfAttachmentMode") || "default";
             const summaryMode = options?.summaryMode || getPref("summaryMode") || "single";
-            const multiModelEndpoints = LLMEndpointManager.isMultiModelSummaryEnabled() ? LLMEndpointManager.getMultiModelSummaryEndpoints() : [];
+            const multiModelEndpoints = !endpointId && LLMEndpointManager.isMultiModelSummaryEnabled() ? LLMEndpointManager.getMultiModelSummaryEndpoints() : [];
             const useMultiModelSummary = multiModelEndpoints.length > 0;
-            if (LLMEndpointManager.isMultiModelSummaryEnabled() && multiModelEndpoints.length === 0) {
+            if (!endpointId && LLMEndpointManager.isMultiModelSummaryEnabled() && multiModelEndpoints.length === 0) {
               throw new Error(
                 "\u5DF2\u542F\u7528\u591A\u6A21\u578B\u540C\u65F6\u603B\u7ED3\uFF0C\u4F46\u6CA1\u6709\u53EF\u7528\u7684\u5927\u6A21\u578B\u4F9B\u5E94\u5546\u3002\u8BF7\u5728\u8BBE\u7F6E\u7684\u201C\u6A21\u578B\u5E73\u53F0\u201D\u4E2D\u9009\u62E9\u81F3\u5C11\u4E00\u4E2A\u5DF2\u542F\u7528\u4F9B\u5E94\u5546\u3002"
               );
@@ -32408,11 +32778,29 @@ ${combinedContent}`;
                   outputWindow.appendContent(chunk);
                 }
               };
+              const workflowFallbackEndpointId = inferredWorkflowLevel ? getWorkflowFallbackEndpointId(inferredWorkflowLevel, endpointId) : void 0;
+              const generateSummary = async (request) => {
+                if (!endpointId) return llmService_default.generate(request);
+                try {
+                  return await llmService_default.generateWithEndpoint(endpointId, request);
+                } catch (error) {
+                  if (!workflowFallbackEndpointId) throw error;
+                  if (inferredWorkflowLevel === "L2") {
+                    ztoolkit.log("[AI Butler] L2 Qwen failed; retrying Gemma31 fallback:", error);
+                    progressCallback?.("Qwen 27B 不可用，正在改用 Gemma 31B...", 45);
+                  } else {
+                    ztoolkit.log("[AI Butler] L1 local Gemma4 failed; retrying Qwen fallback:", error);
+                    progressCallback?.("本地 Gemma4 不可用，正在改用 Qwen 27B...", 45);
+                  }
+                  return llmService_default.generateWithEndpoint(workflowFallbackEndpointId, request);
+                }
+              };
               let response;
+              const requestPrompt = buildWorkflowRequestPrompt(options?.prompt, inferredWorkflowLevel);
               if (useMultiPdfMode) {
-                response = await llmService_default.generate({
+                response = await generateSummary({
                   task: "summary",
-                  prompt: options?.prompt,
+                  prompt: requestPrompt,
                   content: {
                     kind: "zotero-item",
                     item,
@@ -32422,9 +32810,9 @@ ${combinedContent}`;
                   onProgress
                 });
               } else {
-                response = await llmService_default.generate({
+                response = await generateSummary({
                   task: "summary",
-                  prompt: options?.prompt,
+                  prompt: requestPrompt,
                   content: {
                     kind: "zotero-item",
                     item,
@@ -32445,7 +32833,7 @@ ${combinedContent}`;
                 outputWindow,
                 progressCallback,
                 streamCallback,
-                void 0,
+                endpointId,
                 options?.abortSignal
               );
               fullContent = multiRoundResult.content;
@@ -32456,9 +32844,20 @@ ${combinedContent}`;
             }
             throwIfAborted(options?.abortSignal);
             progressCallback?.("\u6B63\u5728\u521B\u5EFA\u7B14\u8BB0...", 80);
+            fullContent = this.sanitizeModelOutputForNote(fullContent, inferredWorkflowLevel);
             if (!fullContent || !fullContent.trim()) {
               throw new Error("AI \u8FD4\u56DE\u5185\u5BB9\u4E3A\u7A7A\uFF0C\u7B14\u8BB0\u672A\u521B\u5EFA");
             }
+            const l1DataAvailability = inferredWorkflowLevel === "L1" ? this.extractL1DataAvailability(fullContent) : null;
+            const workflowValidation = this.validateWorkflowOutput(fullContent, inferredWorkflowLevel, {
+              presetId: options?.workflowPresetId,
+              contractVersion: options?.workflowContractVersion
+            });
+            const parsedTags = workflowValidation?.parsedTags || this.extractZoteroTags(fullContent);
+            if (inferredWorkflowLevel) {
+              parsedTags.tags = this.filterWorkflowTopicTags(parsedTags.tags, inferredWorkflowLevel);
+            }
+            fullContent = parsedTags.content;
             let noteContent = noteContentOverride || this.formatNoteContent(itemTitle, fullContent, "AI \u7BA1\u5BB6");
             if (!noteContentOverride && llmMetadata) {
               noteContent = LLMNoteMetadataService.wrapHtml(noteContent, llmMetadata);
@@ -32467,9 +32866,10 @@ ${combinedContent}`;
               const oldHtml = existing.getNote?.() || "";
               let finalHtml = noteContent;
               if (policy === "append") {
-                finalHtml = `${oldHtml}
+                const combinedHtml = `${noteContent}
 <hr/>
-${noteContent}`;
+${oldHtml}`;
+                finalHtml = inferredWorkflowLevel ? orderWorkflowSummaryHtml(combinedHtml) : combinedHtml;
               }
               existing.setNote?.(finalHtml);
               await existing.saveTx?.();
@@ -32478,12 +32878,14 @@ ${noteContent}`;
               note = await this.createNote(item, noteContent);
               await note.saveTx();
             }
+            await this.applyZoteroTags(item, parsedTags.tags);
+            if (l1DataAvailability) await this.applyManagedDataAvailabilityTag(item, l1DataAvailability.tag);
             if (outputWindow) {
               outputWindow.finishItem();
             }
             progressCallback?.("\u5B8C\u6210\uFF01", 100);
             const enableTable = getPref("enableTableOnSingleNote") ?? true;
-            if (enableTable && isTableFeatureEnabled()) {
+            if (enableTable && isTableFeatureEnabled() && !inferredWorkflowLevel) {
               Promise.resolve().then(() => (init_literatureReviewService(), literatureReviewService_exports)).then(({ LiteratureReviewService: LiteratureReviewService2 }) => {
                 const tableTemplate = getPref("tableTemplate") || DEFAULT_TABLE_TEMPLATE;
                 const fillPrompt = getPref("tableFillPrompt") || DEFAULT_TABLE_FILL_PROMPT;
@@ -32790,6 +33192,335 @@ ${details}`);
           const noteHtml = `<h2>${heading}</h2>
 <div>${htmlContent}</div>`;
           return metadata ? LLMNoteMetadataService.wrapHtml(noteHtml, metadata) : noteHtml;
+        }
+        static getWorkflowTagSchema() {
+          return {
+            workflow: "AI:", evidence: "Evidence:", disease: "Disease:", tissue: "Tissue:", cell: "Cell:", gene: "Gene:", pathway: "Pathway:", exposure: "Exposure:", intervention: "Intervention:", method: "Method:", phenotype: "Phenotype:", species: "Species:", design: "Design:"
+          };
+        }
+        static filterWorkflowTopicTags(tags, workflowLevel) {
+          const level = String(workflowLevel || "").toUpperCase();
+          const commonPrefixes = ["Disease:", "Tissue:", "Cell:", "Gene:", "Pathway:", "Exposure:", "Intervention:", "Method:", "Phenotype:", "Species:", "Design:"];
+          const allowedPrefixes = level === "L1" ? commonPrefixes : level === "L2" || level === "L3" ? ["Evidence:", ...commonPrefixes] : [];
+          if (!allowedPrefixes.length || !Array.isArray(tags)) return [];
+          const genericPayloads = new Set(["unknown", "not reported", "not applicable", "n/a", "none", "unspecified", "research", "study", "article", "其他", "未知", "未报告", "不适用"]);
+          const seen = /* @__PURE__ */ new Set();
+          const accepted = [];
+          for (const rawTag of tags) {
+            const tag = String(rawTag || "").replace(/\s+/g, " ").trim();
+            const prefix = allowedPrefixes.find((candidate) => tag.startsWith(candidate));
+            if (!prefix) continue;
+            const payload = tag.slice(prefix.length).trim();
+            if (!payload || payload.length > 100 || genericPayloads.has(payload.toLowerCase())) continue;
+            const dedupeKey = `${prefix}${payload}`.toLocaleLowerCase();
+            if (seen.has(dedupeKey)) continue;
+            seen.add(dedupeKey);
+            accepted.push(`${prefix}${payload}`);
+          }
+          if (accepted.length !== tags.length) {
+            ztoolkit.log(`[AI-Butler] ${level} controlled topic tags: kept ${accepted.length}/${tags.length}`);
+          }
+          return accepted;
+        }
+        static parseWorkflowHeadings(content) {
+          const lines = String(content || "").split(/\r?\n/);
+          const headings = [];
+          for (let i = 0; i < lines.length; i++) {
+            const match = lines[i].match(/^\s*(#{1,6})\s+(.+?)\s*$/);
+            if (!match) continue;
+            const title = match[2].replace(/^\d+[.)、：:]\s*/, "").replace(/[：:]\s*$/, "").trim();
+            headings.push({ line: i, level: match[1].length, title });
+          }
+          return { lines, headings };
+        }
+        static hasWorkflowSection(parsed, expected) {
+          const normalize = (value) => String(value || "").toLowerCase().replace(/[–—]/g, "-").replace(/\s*[/&]\s*/g, "/").replace(/[^\p{L}\p{N}/-]+/gu, " ").trim();
+          const wanted = normalize(expected);
+          const index = parsed.headings.findIndex((heading) => normalize(heading.title) === wanted);
+          if (index < 0) return false;
+          const heading = parsed.headings[index];
+          let endLine = parsed.lines.length;
+          for (let i = index + 1; i < parsed.headings.length; i++) {
+            if (parsed.headings[i].level <= heading.level) { endLine = parsed.headings[i].line; break; }
+          }
+          const body = parsed.lines.slice(heading.line + 1, endLine).filter((line) => !/^\s*#{1,6}\s+/.test(line)).join("\n").trim();
+          return /[\p{L}\p{N}]/u.test(body);
+        }
+        static getWorkflowSectionBody(parsed, expected) {
+          const normalize = (value) => String(value || "").toLowerCase().replace(/[–—]/g, "-").replace(/\s*[/&]\s*/g, "/").replace(/[^\p{L}\p{N}/-]+/gu, " ").trim();
+          const wanted = normalize(expected);
+          const index = parsed.headings.findIndex((heading) => normalize(heading.title) === wanted);
+          if (index < 0) return "";
+          const heading = parsed.headings[index];
+          let endLine = parsed.lines.length;
+          for (let i = index + 1; i < parsed.headings.length; i++) {
+            if (parsed.headings[i].level <= heading.level) { endLine = parsed.headings[i].line; break; }
+          }
+          return parsed.lines.slice(heading.line + 1, endLine).join("\n").trim();
+        }
+        static extractWorkflowEvidenceLevelDeclarations(body) {
+          const source = String(body || "").replace(/\*\*|__/g, "");
+          const levels = [];
+          const add = (value) => {
+            const normalized = String(value || "").toUpperCase();
+            if (/^E[0-5]$/.test(normalized)) levels.push(normalized);
+          };
+          const labeled = /(?:^|[\n|;/])\s*(?:[-*+]\s*)?(?:\d+[.)、]\s*)?(?:Evidence\s*Level|证据等级)\s*(?:[:：=]|[-–—]\s+|\|\s*)\s*(E[0-5])\b/gi;
+          for (const match of source.matchAll(labeled)) add(match[1]);
+          const firstMeaningful = source.split(/\r?\n/).map((line) => line.replace(/^\s*[-*+]\s*/, "").trim()).find((line) => line && !/^\|?\s*[-:]+(?:\s*\|\s*[-:]+)*\s*\|?$/.test(line));
+          const direct = firstMeaningful?.match(/^(E[0-5])\s*(?:$|[-–—:：])/i);
+          if (direct) add(direct[1]);
+          return [...new Set(levels)];
+        }
+        static normalizeWorkflowEvidenceLevelDeclarations(content, evidenceLevel) {
+          if (!/^E[0-5]$/.test(String(evidenceLevel || "").toUpperCase())) return String(content || "");
+          const target = String(evidenceLevel).toUpperCase();
+          const field = /((?:\*\*|__)?(?:Evidence\s*Level|证据等级)(?:(?:\s*[:：=]\s*)(?:\*\*|__)?|(?:\*\*|__)\s*[:：=]\s*|(?:\*\*|__)?\s*[-–—]\s+|(?:\*\*|__)?\s*\|\s*)\s*(?:\*\*|__)?\s*)E[0-5]\b/gi;
+          return String(content || "").replace(field, (_match, prefix) => `${prefix}${target}`);
+        }
+        static sanitizeModelOutputForNote(content, workflowLevel) {
+          let value = String(content || "").replace(/\r\n/g, "\n").trim();
+          if (!value) return "";
+          value = value.replace(/<\s*(think|thinking|reasoning|analysis)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, "").trim();
+          value = value.replace(/```(?:think|thinking|reasoning|analysis)\s*[\s\S]*?```/gi, "").trim();
+          const finalLabel = /(?:^|\n)\s*(?:#{1,6}\s*)?(?:final\s+(?:answer|response|output)|最终答案|最终回复|最终输出)\s*[:：]?\s*(?:\n|$)/i;
+          const workflowMarkers = {
+            L1: /(?:^|\n)\s*(?:#{1,6}\s*)?(?:\[L1\][^\n]*|SUMMARY\s*[:：]?)/i,
+            L2: /(?:^|\n)\s*(?:#{1,6}\s*)?\[L2\]\s*Evidence\s*Card\b/i,
+            L3: /(?:^|\n)\s*(?:#{1,6}\s*)?\[L3\]\s*Deep\s*Reading\b/i
+          };
+          const sliceFromMarker = (source, marker, dropMarker) => {
+            if (!marker) return "";
+            const match = source.match(marker);
+            if (!match || match.index == null) return "";
+            const offset = match[0].startsWith("\n") ? 1 : 0;
+            return source.slice(match.index + (dropMarker ? match[0].length : offset)).trim();
+          };
+          const recoverFinal = (source) => sliceFromMarker(source, finalLabel, true) || sliceFromMarker(source, workflowMarkers[String(workflowLevel || "").toUpperCase()], false);
+          const leadingReasoning = /^\s*(?:#{1,6}\s*)?(?:reasoning|chain\s+of\s+thought|thought\s+process|thinking\s+process|analysis\s+process|思考过程|推理过程|分析过程)\s*[:：]?\s*(?:\n|$)/i;
+          if (leadingReasoning.test(value)) {
+            const recovered = recoverFinal(value);
+            if (recovered) value = recovered;
+          }
+          const unterminated = value.match(/^\s*<\s*(?:think|thinking|reasoning|analysis)\b[^>]*>/i);
+          if (unterminated) {
+            const recovered = recoverFinal(value.slice(unterminated[0].length));
+            if (recovered) value = recovered;
+          }
+          value = value.replace(/^\s*<\s*\/\s*(?:think|thinking|reasoning|analysis)\s*>\s*/i, "");
+          const finalAtStart = value.match(/^\s*(?:#{1,6}\s*)?(?:final\s+(?:answer|response|output)|最终答案|最终回复|最终输出)\s*[:：]?\s*(?:\n|$)/i);
+          if (finalAtStart) value = value.slice(finalAtStart[0].length);
+          return value.trim();
+        }
+        static recoverL3BodyWithoutTagBlock(source) {
+          const value = String(source || "");
+          const start = value.search(/ZOTERO_TAGS_JSON_START/i);
+          if (start >= 0) return value.slice(0, start).trim();
+          return value.replace(/ZOTERO_TAGS_JSON_END/gi, "").trim();
+        }
+        static extractL1DataAvailability(content) {
+          const source = String(content || "");
+          const availability = source.match(/(?:^|\n)\s*DATA_AVAILABILITY\s*[:：]\s*(Public|ControlledAccess|AvailableOnRequest|NotPublic|NotReported|NotApplicable)\s*(?=\n|$)/i)?.[1] || "NotReported";
+          const normalized = {
+            public: "Public",
+            controlledaccess: "ControlledAccess",
+            availableonrequest: "AvailableOnRequest",
+            notpublic: "NotPublic",
+            notreported: "NotReported",
+            notapplicable: "NotApplicable"
+          }[availability.toLowerCase()] || "NotReported";
+          const accession = source.match(/(?:^|\n)\s*DATA_ACCESSION\s*[:：]\s*([^\n]+)/i)?.[1]?.trim() || "Not reported";
+          return { status: normalized, tag: `Data:${normalized}`, accession };
+        }
+        static validateWorkflowOutput(content, workflowLevel, contract) {
+          if (!workflowLevel) return;
+          const source = String(content || "").trim();
+          const fail = (detail) => {
+            const error = new Error(`${workflowLevel} output incomplete or malformed (${detail}); note and completion tag were not saved`);
+            error.suppressTaskRetry = true;
+            throw error;
+          };
+          if (!source) fail("empty body");
+          const isDefaultContract = contract?.contractVersion === "l123-tags-v1" && contract?.presetId === `ai-butler-${workflowLevel.toLowerCase()}`;
+          let parsedTags;
+          try {
+            parsedTags = this.extractZoteroTags(source, { requireComplete: isDefaultContract, workflowLevel });
+          } catch (error) {
+            const isRecoverableL3Boundary = isDefaultContract && workflowLevel === "L3" && /missing or incomplete JSON boundary/i.test(String(error?.message || error));
+            if (!isRecoverableL3Boundary) throw error;
+            parsedTags = {
+              content: this.recoverL3BodyWithoutTagBlock(source),
+              tags: [],
+              workflow: [],
+              evidenceLevel: "",
+              structured: false,
+              recoveredMissingBoundary: true
+            };
+          }
+          let withoutTags = parsedTags.content.trim();
+          if (!withoutTags) fail("empty body");
+          if (workflowLevel === "L1") {
+            const summaryMatch = withoutTags.match(/(?:^|\n)\s*(?:#{1,6}\s*)?SUMMARY\s*[:：]?\s*([\s\S]+)/i);
+            const body = summaryMatch ? summaryMatch[1].trim() : withoutTags.replace(/^\s*#?\s*\[L1\][^\n]*\n?/i, "").trim();
+            if (!body || !/[\p{L}\p{N}]/u.test(body) || /^SUMMARY\s*[:：]?$/i.test(body)) fail("missing SUMMARY body");
+          } else if (isDefaultContract) {
+            const heading = workflowLevel === "L2" ? /\[L2\]\s*Evidence\s*Card/i : /\[L3\]\s*Deep\s*Reading/i;
+            if (!heading.test(withoutTags)) fail("missing workflow heading");
+            const required = workflowLevel === "L2" ? [
+              "One-Sentence Conclusion", "Research Question", "Study Design", "Biological Context", "Key Molecules / Pathways", "Direction", "Main Evidence", "Quantitative Evidence", "Evidence Level", "Mechanistic Chain", "Causality", "Key Limitation", "Review Role", "Safe Review Statement", "Identifier"
+            ] : [
+              "One-Sentence Conclusion", "Research Question & Knowledge Gap", "Study Architecture", "Evidence Card", "Main Findings", "Evidence Chain", "Mechanistic Model", "Evidence Boundary", "Evidence Level", "Statistical and Methodological Appraisal", "Key Strengths", "Key Limitations", "Review-Ready Statements", "Claims to Avoid", "Review Role", "Review Keywords"
+            ];
+            const parsed = this.parseWorkflowHeadings(withoutTags);
+            for (const section of required) if (!this.hasWorkflowSection(parsed, section)) fail(`missing or empty section: ${section}`);
+          } else {
+            const plain = withoutTags.replace(/^\s*#{1,6}[^\n]*\n?/, "").trim();
+            if (!/[\p{L}\p{N}]/u.test(plain)) fail("custom output has no usable body");
+          }
+          if (isDefaultContract && workflowLevel === "L3") {
+            const parsed = this.parseWorkflowHeadings(withoutTags);
+            const primaryLevels = this.extractWorkflowEvidenceLevelDeclarations(this.getWorkflowSectionBody(parsed, "Evidence Level"));
+            const cardLevels = this.extractWorkflowEvidenceLevelDeclarations(this.getWorkflowSectionBody(parsed, "Evidence Card"));
+            if (primaryLevels.length > 1) fail("multiple explicit current Evidence Levels in section 9");
+            const canonicalLevel = primaryLevels[0] || parsedTags.evidenceLevel || (cardLevels.length === 1 ? cardLevels[0] : "");
+            if (!canonicalLevel) fail("missing explicit current Evidence Level");
+            withoutTags = this.normalizeWorkflowEvidenceLevelDeclarations(withoutTags, canonicalLevel);
+            parsedTags.content = withoutTags;
+            parsedTags.evidenceLevel = canonicalLevel;
+          } else if (parsedTags.evidenceLevel && isDefaultContract && workflowLevel === "L2") {
+            const parsed = this.parseWorkflowHeadings(withoutTags);
+            const declaredLevels = this.extractWorkflowEvidenceLevelDeclarations(this.getWorkflowSectionBody(parsed, "Evidence Level"));
+            if (declaredLevels.some((level) => level !== parsedTags.evidenceLevel)) fail("Evidence level conflicts between explicit current-level fields and tags JSON");
+          }
+          return { parsedTags, contractMode: isDefaultContract ? "default" : "compatible" };
+        }
+        /** Parse model declarations separately from content tags. AI:Lx declarations never prove completion. */
+        static extractZoteroTags(content, options = {}) {
+          const source = String(content || "");
+          const starts = source.match(/ZOTERO_TAGS_JSON_START/gi) || [];
+          const ends = source.match(/ZOTERO_TAGS_JSON_END/gi) || [];
+          const match = source.match(/ZOTERO_TAGS_JSON_START\s*([\s\S]*?)\s*ZOTERO_TAGS_JSON_END/i);
+          const fail = (detail) => {
+            const error = new Error(`Structured Zotero tags are malformed (${detail})`);
+            error.suppressTaskRetry = true;
+            throw error;
+          };
+          if (!match) {
+            if (options.requireComplete || starts.length || ends.length) fail("missing or incomplete JSON boundary");
+            return { content: source, tags: [], workflow: [], evidenceLevel: "", structured: false };
+          }
+          if (starts.length !== 1 || ends.length !== 1) fail("expected exactly one JSON block");
+          let parsed;
+          try { parsed = JSON.parse(match[1].trim()); } catch { fail("invalid JSON object"); }
+          if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") fail("root must be an object");
+          const schema = this.getWorkflowTagSchema();
+          const keys = Object.keys(parsed);
+          if (options.requireComplete && (keys.length !== 13 || Object.keys(schema).some((key) => !keys.includes(key)))) fail("default contract requires all 13 fields");
+          for (const key of keys) if (!(key in schema)) fail(`unknown field: ${key}`);
+          const contentTags = [];
+          let workflow = [];
+          let evidenceLevel = "";
+          for (const [key, value] of Object.entries(parsed)) {
+            if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) fail(`${key} must be a string array`);
+            const unique = [...new Set(value.map((entry) => entry.trim()).filter(Boolean))];
+            if (unique.length !== value.filter((entry) => entry.trim()).length) fail(`${key} contains duplicate or empty values`);
+            if (key === "workflow") {
+              workflow = unique;
+              if (unique.some((tag) => !/^AI:L[123]$/.test(tag))) fail("invalid workflow declaration");
+              continue;
+            }
+            for (const tag of unique) if (!tag.startsWith(schema[key]) || tag.length > 120) fail(`tag assigned to wrong field: ${tag}`);
+            if (key === "evidence") {
+              if (unique.some((tag) => !/^Evidence:E[0-5]$/.test(tag))) fail("invalid Evidence enum");
+              evidenceLevel = unique[0]?.match(/^Evidence:(E[0-5])/i)?.[1]?.toUpperCase() || "";
+            }
+            contentTags.push(...unique);
+          }
+          if (options.requireComplete) {
+            const expectedWorkflow = options.workflowLevel === "L1" ? ["AI:L1"] : options.workflowLevel === "L2" ? ["AI:L1", "AI:L2"] : ["AI:L1", "AI:L2", "AI:L3"];
+            if (workflow.length !== expectedWorkflow.length || expectedWorkflow.some((tag, index) => workflow[index] !== tag)) fail("workflow declaration does not match level");
+            const evidence = parsed.evidence || [];
+            if (options.workflowLevel === "L1" && evidence.length !== 0) fail("L1 evidence must be empty");
+            if (options.workflowLevel !== "L1" && evidence.length !== 1) fail("L2/L3 require exactly one Evidence level");
+          }
+          return {
+            content: source.replace(match[0], "").replace(/\n{3,}/g, "\n\n").trim(),
+            tags: [...new Set(contentTags)], workflow, evidenceLevel, structured: true
+          };
+        }
+        /** 只追加缺少的结构化标签，不删除用户已有标签。 */
+        static async applyZoteroTags(item, tags) {
+          if (!tags?.length) return;
+          const existing = new Set((item.getTags?.() || []).map((tag) => tag.tag));
+          const toAdd = tags.filter((tag) => !existing.has(tag));
+          if (!toAdd.length) return;
+          for (const tag of toAdd) item.addTag(tag);
+          await item.saveTx();
+        }
+        static async applyManagedDataAvailabilityTag(item, tag) {
+          const allowed = new Set(["Data:Public", "Data:ControlledAccess", "Data:AvailableOnRequest", "Data:NotPublic", "Data:NotReported", "Data:NotApplicable"]);
+          const normalized = allowed.has(tag) ? tag : "Data:NotReported";
+          let changed = false;
+          for (const existing of item.getTags?.() || []) {
+            if (/^Data:(?:Public|ControlledAccess|AvailableOnRequest|NotPublic|NotReported|NotApplicable)$/.test(existing.tag) && existing.tag !== normalized) {
+              item.removeTag?.(existing.tag);
+              changed = true;
+            }
+          }
+          if (!(item.getTags?.() || []).some((entry) => entry.tag === normalized)) {
+            item.addTag(normalized);
+            changed = true;
+          }
+          if (changed) await item.saveTx();
+        }
+        static async supplementL1DataAvailabilityTag(item) {
+          const noteIDs = item.getNotes?.() || [];
+          const notes = [];
+          for (const noteID of noteIDs) {
+            try {
+              const note = await Zotero.Items.getAsync(noteID);
+              if (!note) continue;
+              notes.push(note);
+            } catch {
+            }
+          }
+          notes.sort((left, right) => getSidebarNoteRecency(right) - getSidebarNoteRecency(left) || Number(right.id || 0) - Number(left.id || 0));
+          for (const note of notes) {
+            const plainText = workflowNoteVisibleText(note.getNote?.() || "");
+            if (!/(?:^|\n)\s*DATA_AVAILABILITY\s*[:：]/i.test(plainText)) continue;
+            const parsed = this.extractL1DataAvailability(plainText);
+            await this.applyManagedDataAvailabilityTag(item, parsed.tag);
+            return { ...parsed, source: "existing-note" };
+          }
+          const primaryEndpointId = getWorkflowEndpointId("L1");
+          const fallbackEndpointId = getWorkflowFallbackEndpointId("L1", primaryEndpointId);
+          const prompt = `只判断这篇论文中测序、组学或其他可复用研究数据的开放状态。请检查正文、Data availability、Code availability、补充材料和 accession。不要总结论文，也不要输出解释。只输出以下两行：
+DATA_AVAILABILITY: <Public|ControlledAccess|AvailableOnRequest|NotPublic|NotReported|NotApplicable>
+DATA_ACCESSION: <稳定数据库编号、公开链接或 Not reported>
+
+判定规则：Public=有明确公开数据库、公开链接或 accession；ControlledAccess=需要审批或申请；AvailableOnRequest=明确说明依合理请求提供；NotPublic=明确不公开或不可获得；NotReported=涉及可复用数据但没有明确开放信息；NotApplicable=没有生成或分析需要公开存储的数据。不得把模糊的 data available 猜成 Public。`;
+          const request = {
+            task: "summary",
+            prompt,
+            content: { kind: "zotero-item", item, attachmentMode: "default" }
+          };
+          let response;
+          try {
+            response = await llmService_default.generateWithEndpoint(primaryEndpointId, request);
+          } catch (error) {
+            if (!fallbackEndpointId) throw error;
+            ztoolkit.log("[AI-Butler] L1 data-availability supplement primary endpoint failed; retrying fallback:", error);
+            response = await llmService_default.generateWithEndpoint(fallbackEndpointId, request);
+          }
+          const text = String(response?.text || "").trim();
+          if (!/(?:^|\n)\s*(?:[-*+]\s*)?(?:\*\*)?DATA_AVAILABILITY(?:\*\*)?\s*[:：]/i.test(text)) {
+            const error = new Error("数据开放状态返回格式不完整，标签未写入");
+            error.suppressTaskRetry = true;
+            throw error;
+          }
+          const parsed = this.extractL1DataAvailability(text.replace(/\*\*/g, ""));
+          await this.applyManagedDataAvailabilityTag(item, parsed.tag);
+          return { ...parsed, source: "model" };
         }
         /**
          * 将 Markdown 转换为适合 Zotero 笔记的 HTML 格式
@@ -35377,6 +36108,20 @@ ${d.responseBody.substring(0, 1e3)}`;
     const NativeAbortController = globalThis.AbortController;
     return NativeAbortController ? new NativeAbortController() : new SimpleAbortController();
   }
+  function formatWorkflowTiming(timing) {
+    if (!timing || typeof timing !== "object") return "";
+    const seconds = (from, to) => Number.isFinite(from) && Number.isFinite(to) && to >= from ? `${Math.round((to - from) / 1e3)}s` : "";
+    const parts = [];
+    const pdf = seconds(timing.pdfStartedAt, timing.modelStartedAt);
+    const firstToken = seconds(timing.modelStartedAt, timing.firstTokenAt);
+    const generation = seconds(timing.firstTokenAt || timing.modelStartedAt, timing.writeStartedAt);
+    const write = seconds(timing.writeStartedAt, timing.writeFinishedAt);
+    if (pdf) parts.push(`PDF ${pdf}${timing.pdfCacheHit ? " (cache)" : ""}`);
+    if (firstToken) parts.push(`首 token ${firstToken}`);
+    if (generation) parts.push(`生成 ${generation}`);
+    if (write) parts.push(`写入 ${write}`);
+    return parts.join(" · ");
+  }
   var NO_PDF_ERROR_MSG, TASK_ABORT_DETAIL, SimpleAbortSignal, SimpleAbortController, TaskStatus, TaskQueueManager;
   var init_taskQueue = __esm({
     "src/modules/taskQueue.ts"() {
@@ -35462,12 +36207,23 @@ ${d.responseBody.substring(0, 1e3)}`;
         // 默认60秒
         /** 是否正在运行 */
         isRunning = false;
+        /** 插件卸载后永久拒绝新任务；普通 stop 不设置此标记。 */
+        disposed = false;
         /**
          * 私有构造函数(单例模式)
          */
         constructor() {
           this.loadFromStorage(true);
           this.loadSettings();
+          Promise.resolve().then(() => {
+            const hasPending = this.getAllTasks().some(
+              (task) => task.status === "priority" /* PRIORITY */ || task.status === "pending" /* PENDING */
+            );
+            if (hasPending) {
+              logTaskQueue("[AI-Butler] Resuming persisted pending tasks");
+              this.start();
+            }
+          });
         }
         /**
          * 获取单例实例
@@ -35503,7 +36259,18 @@ ${d.responseBody.substring(0, 1e3)}`;
             return true;
           }
           if (task.status === "failed" /* FAILED */) {
-            logTaskQueue(`\u5931\u8D25\u4EFB\u52A1\u91CD\u65B0\u5165\u961F: ${task.id}`);
+            if (options?.manualRepair !== true) {
+              logTaskQueue(`Terminal failed task not auto-requeued: ${task.id}`);
+              return false;
+            }
+            if (artifactType === "summary" && options?.taskIntent === "repair-missing" && options?.workflowLevel) {
+              const levelState = await detectWorkflowLevelState(item, options.workflowLevel);
+              if (levelState.state !== WORKFLOW_ARTIFACT_MISSING) {
+                logTaskQueue(`[AI-Butler] repair-missing failed-task recheck ${options.workflowLevel}: ${levelState.state}; skip ${task.id}`);
+                return false;
+              }
+            }
+            logTaskQueue(`Manual repair requeues failed task: ${task.id}`);
             this.resetTaskForEnqueue(task, priority, options, workflowStage);
             await this.saveToStorage();
             if (artifactType === "summary") {
@@ -35522,6 +36289,14 @@ ${d.responseBody.substring(0, 1e3)}`;
           return true;
         }
         async shouldRegenerateCompletedTask(task, item, artifactType, options) {
+          if (artifactType === "summary" && options?.taskIntent === "repair-missing" && options?.workflowLevel) {
+            const levelState = await detectWorkflowLevelState(item, options.workflowLevel);
+            if (levelState.state !== "missing") {
+              logTaskQueue(`[AI-Butler] repair-missing recheck ${options.workflowLevel}: ${levelState.state}; skip ${task.id}`);
+              return false;
+            }
+            return true;
+          }
           const artifact = await TaskArtifacts.probe(artifactType, item);
           const policyRequiresRegeneration = this.shouldRegenerateWhenArtifactExists(
             artifactType,
@@ -35543,6 +36318,7 @@ ${d.responseBody.substring(0, 1e3)}`;
         }
         shouldRegenerateWhenArtifactExists(artifactType, options) {
           if (artifactType === "summary") {
+            if (options?.taskIntent === "repair-missing") return false;
             if (options?.forceOverwrite) {
               return true;
             }
@@ -35565,10 +36341,14 @@ ${d.responseBody.substring(0, 1e3)}`;
           task.startedAt = void 0;
           task.completedAt = void 0;
           task.duration = void 0;
+          task.timings = void 0;
           task.createdAt = /* @__PURE__ */ new Date();
           if (workflowStage !== void 0) {
             task.workflowStage = workflowStage;
           }
+        }
+        getActiveSummaryTaskForItem(itemId) {
+          return this.getAllTasks().find((task) => task.itemId === itemId && (!task.taskType || task.taskType === "summary") && ["pending", "priority", "processing"].includes(task.status));
         }
         notifySummaryTaskEnqueued(task) {
           if (task.taskType && task.taskType !== "summary") {
@@ -35588,7 +36368,10 @@ ${d.responseBody.substring(0, 1e3)}`;
          * @returns 任务ID
          */
         async addTask(item, priority = false, options) {
-          const taskId = `task-${item.id}`;
+          if (this.disposed) throw new Error("Task queue has been disposed");
+          options = resolveWorkflowTaskContract(options, { allowRegister: true });
+          const workflowLevel = String(options?.workflowLevel || "").toLowerCase();
+          const taskId = workflowLevel ? `task-${item.id}-${workflowLevel}` : `task-${item.id}`;
           if (this.tasks.has(taskId)) {
             const existingTask = this.tasks.get(taskId);
             const shouldRun = await this.requeueExistingFixedTask(
@@ -35603,11 +36386,6 @@ ${d.responseBody.substring(0, 1e3)}`;
             }
             if (!this.isRunning) {
               this.start();
-            }
-            if (priority) {
-              this.executeTask(taskId).catch((e) => {
-                logTaskQueue(`\u4F18\u5148\u4EFB\u52A1\u7ACB\u5373\u6267\u884C\u5931\u8D25: ${e}`);
-              });
             }
             return taskId;
           }
@@ -35628,11 +36406,6 @@ ${d.responseBody.substring(0, 1e3)}`;
           logTaskQueue(`\u6DFB\u52A0\u4EFB\u52A1: ${task.title} (${taskId})`);
           if (!this.isRunning) {
             this.start();
-          }
-          if (priority) {
-            this.executeTask(taskId).catch((e) => {
-              logTaskQueue(`\u4F18\u5148\u4EFB\u52A1\u7ACB\u5373\u6267\u884C\u5931\u8D25: ${e}`);
-            });
           }
           return taskId;
         }
@@ -35658,6 +36431,7 @@ ${d.responseBody.substring(0, 1e3)}`;
          * @returns 任务ID
          */
         async addImageSummaryTask(item, priority = true) {
+          if (this.disposed) throw new Error("Task queue has been disposed");
           const taskId = `img-task-${item.id}`;
           if (this.tasks.has(taskId)) {
             const existingTask = this.tasks.get(taskId);
@@ -35713,6 +36487,7 @@ ${d.responseBody.substring(0, 1e3)}`;
          * @param taskId 任务ID
          */
         async executeImageSummaryTask(taskId) {
+          if (this.disposed) return;
           const task = this.tasks.get(taskId);
           if (!task || task.taskType !== "imageSummary") {
             return;
@@ -35792,6 +36567,7 @@ ${d.responseBody.substring(0, 1e3)}`;
          * @returns 任务ID
          */
         async addMindmapTask(item, priority = true) {
+          if (this.disposed) throw new Error("Task queue has been disposed");
           const taskId = `mindmap-task-${item.id}`;
           if (this.tasks.has(taskId)) {
             const existingTask = this.tasks.get(taskId);
@@ -35846,6 +36622,7 @@ ${d.responseBody.substring(0, 1e3)}`;
          * @param taskId 任务ID
          */
         async executeMindmapTask(taskId) {
+          if (this.disposed) return;
           const task = this.tasks.get(taskId);
           if (!task || task.taskType !== "mindmap") {
             return;
@@ -35919,6 +36696,7 @@ ${d.responseBody.substring(0, 1e3)}`;
          * 添加填表任务
          */
         async addTableFillTask(item, priority = true) {
+          if (this.disposed) throw new Error("Task queue has been disposed");
           if (!isTableFeatureEnabled()) {
             throw new Error("\u8868\u683C\u529F\u80FD\u5DF2\u5728\u8BBE\u7F6E\u4E2D\u5173\u95ED");
           }
@@ -35974,6 +36752,7 @@ ${d.responseBody.substring(0, 1e3)}`;
          * 执行填表任务
          */
         async executeTableFillTask(taskId) {
+          if (this.disposed) return;
           const task = this.tasks.get(taskId);
           if (!task || task.taskType !== "tableFill") return;
           if (!isTableFeatureEnabled()) {
@@ -36062,6 +36841,7 @@ ${d.responseBody.substring(0, 1e3)}`;
          * 添加综述任务
          */
         async addReviewTask(collection, pdfAttachments, reviewName, prompt, tableTemplate) {
+          if (this.disposed) throw new Error("Task queue has been disposed");
           const taskId = `review-task-${collection.id}`;
           if (this.tasks.has(taskId)) {
             const existing = this.tasks.get(taskId);
@@ -36099,6 +36879,7 @@ ${d.responseBody.substring(0, 1e3)}`;
          * 执行综述任务
          */
         async executeReviewTask(taskId, prompt) {
+          if (this.disposed) return;
           const task = this.tasks.get(taskId);
           if (!task || task.taskType !== "review") return;
           if (task.status === "processing" /* PROCESSING */ || task.status === "completed" /* COMPLETED */)
@@ -36180,6 +36961,7 @@ ${d.responseBody.substring(0, 1e3)}`;
          * 添加针对性提问任务
          */
         async addTargetedQuestionTask(collection, pdfAttachments, noteTitle, targetedPrompt, tableTemplate, options) {
+          if (this.disposed) throw new Error("Task queue has been disposed");
           const taskId = `targeted-task-${collection.id}-${Date.now()}-${Math.floor(
             Math.random() * 1e3
           )}`;
@@ -36214,6 +36996,7 @@ ${d.responseBody.substring(0, 1e3)}`;
          * 执行针对性提问任务
          */
         async executeTargetedQuestionTask(taskId) {
+          if (this.disposed) return;
           const task = this.tasks.get(taskId);
           if (!task || task.taskType !== "targetedQuestion") return;
           if (task.status === "processing" /* PROCESSING */ || task.status === "completed" /* COMPLETED */)
@@ -36388,6 +37171,9 @@ ${d.responseBody.substring(0, 1e3)}`;
           if (task.status === "pending" /* PENDING */ || task.status === "failed" /* FAILED */) {
             task.status = priority ? "priority" /* PRIORITY */ : "pending" /* PENDING */;
             await this.saveToStorage();
+            if (!this.isRunning) {
+              this.start();
+            }
             logTaskQueue(`\u4EFB\u52A1 ${taskId} \u4F18\u5148\u7EA7\u5DF2\u66F4\u65B0: ${priority}`);
           }
         }
@@ -36409,6 +37195,7 @@ ${d.responseBody.substring(0, 1e3)}`;
           task.startedAt = void 0;
           task.completedAt = void 0;
           task.duration = void 0;
+          task.timings = void 0;
           task.createdAt = /* @__PURE__ */ new Date();
           this.abortingTasks.delete(taskId);
           await this.saveToStorage();
@@ -36527,6 +37314,10 @@ ${d.responseBody.substring(0, 1e3)}`;
          * 启动队列执行器
          */
         start() {
+          if (this.disposed) {
+            logTaskQueue("Task queue is disposed; start ignored");
+            return;
+          }
           if (this.isRunning) {
             logTaskQueue("\u961F\u5217\u6267\u884C\u5668\u5DF2\u5728\u8FD0\u884C");
             return;
@@ -36552,6 +37343,29 @@ ${d.responseBody.substring(0, 1e3)}`;
             this.executorTimerId = null;
           }
           logTaskQueue("\u505C\u6B62\u961F\u5217\u6267\u884C\u5668");
+        }
+        /** Permanently stop queue activity for plugin shutdown/uninstall. */
+        async dispose() {
+          if (this.disposed) return;
+          this.disposed = true;
+          this.stop();
+          const now = /* @__PURE__ */ new Date();
+          for (const [taskId, controller] of this.taskAbortControllers) {
+            this.abortingTasks.add(taskId);
+            controller.abort(LLM_REQUEST_ABORT_MESSAGE);
+            const task = this.tasks.get(taskId);
+            if (task && task.status === "processing") {
+              task.status = "failed";
+              task.error = LLM_REQUEST_ABORT_MESSAGE;
+              task.errorDetails = TASK_ABORT_DETAIL;
+              task.workflowStage = "已终止";
+              task.completedAt = now;
+            }
+          }
+          this.taskAbortControllers.clear();
+          this.processingTasks.clear();
+          await this.saveToStorage();
+          logTaskQueue("Task queue disposed");
         }
         /**
          * 更新执行器设置
@@ -36665,7 +37479,8 @@ ${d.responseBody.substring(0, 1e3)}`;
           task.progress = 0;
           task.error = void 0;
           task.errorDetails = void 0;
-          task.workflowStage = void 0;
+          task.workflowStage = "正在准备 PDF";
+          task.timings = { startedAt: Date.now(), pdfStartedAt: Date.now() };
           this.processingTasks.add(taskId);
           this.abortingTasks.delete(taskId);
           const abortController = createTaskAbortController();
@@ -36682,22 +37497,33 @@ ${d.responseBody.substring(0, 1e3)}`;
             if (!hasPdf) {
               throw new Error(NO_PDF_ERROR_MSG);
             }
-            await NoteGenerator.generateNoteForItem(
+            const generatedArtifact = await NoteGenerator.generateNoteForItem(
               item,
               void 0,
               // 不使用输出窗口,通过流式回调转发
               (message, progress) => {
+                const now = Date.now();
+                const timings = task.timings || (task.timings = { startedAt: now });
                 task.progress = progress;
+                task.workflowStage = message;
+                if (/PDF/.test(String(message)) && !timings.pdfStartedAt) timings.pdfStartedAt = now;
+                if (/生成AI总结/.test(String(message))) {
+                  timings.modelStartedAt ||= now;
+                  timings.pdfFinishedAt ||= now;
+                  timings.pdfCacheHit = PDFExtractor.getWorkflowPdfCacheHit(item.id);
+                }
+                if (/创建笔记/.test(String(message))) {
+                  timings.writeStartedAt ||= now;
+                  timings.generationFinishedAt ||= now;
+                }
                 this.notifyProgress(taskId, progress, message);
               },
               (chunk) => {
-                if (this.abortingTasks.has(taskId)) {
-                  return;
-                }
+                if (this.abortingTasks.has(taskId)) return;
                 try {
-                  if (task.progress === 0) {
-                    this.notifyStream(taskId, { type: "start", title: task.title });
-                  }
+                  const timings = task.timings || (task.timings = { startedAt: Date.now() });
+                  timings.firstTokenAt ||= Date.now();
+                  if (task.progress === 0) this.notifyStream(taskId, { type: "start", title: task.title });
                   this.notifyStream(taskId, { type: "chunk", chunk });
                 } catch (e) {
                   logTaskQueue(`\u6D41\u5F0F\u5185\u5BB9\u5E7F\u64AD\u5931\u8D25: ${e}`);
@@ -36705,8 +37531,26 @@ ${d.responseBody.substring(0, 1e3)}`;
               },
               { ...task.options || {}, abortSignal: abortController.signal }
             );
+            const workflowLevel = String(task.options?.workflowLevel || "").toUpperCase();
+            task.artifact = {
+              workflowLevel,
+              noteKey: generatedArtifact?.note?.key || "",
+              noteId: generatedArtifact?.note?.id || 0,
+              saved: Boolean(generatedArtifact?.note),
+              savedAt: (/* @__PURE__ */ new Date()).toISOString(),
+              inputSource: task.options?.endpointId || "configured-endpoint"
+            };
+            const workflowTag = workflowLevel === "L1" || workflowLevel === "L2" || workflowLevel === "L3" ? `AI:${workflowLevel}` : "";
+            if (workflowTag && !(item.getTags?.() || []).some((tag) => tag.tag === workflowTag)) {
+              item.addTag(workflowTag);
+              await item.saveTx();
+            }
             if (this.abortingTasks.has(taskId) || abortController.signal.aborted) {
               throw new Error(LLM_REQUEST_ABORT_MESSAGE);
+            }
+            if (task.timings) {
+              task.timings.writeStartedAt ||= Date.now();
+              task.timings.writeFinishedAt = Date.now();
             }
             task.status = "completed" /* COMPLETED */;
             task.progress = 100;
@@ -36950,6 +37794,7 @@ ${stack}`.toLowerCase();
               return;
             }
             this.tasks.clear();
+            let abortedTaskRecoveryCount = 0;
             for (const taskData of data.tasks || []) {
               const task = {
                 ...taskData,
@@ -36957,13 +37802,31 @@ ${stack}`.toLowerCase();
                 startedAt: taskData.startedAt ? new Date(taskData.startedAt) : void 0,
                 completedAt: taskData.completedAt ? new Date(taskData.completedAt) : void 0
               };
+              const persistedLevel = String(task.options?.workflowLevel || "").toLowerCase();
+              if (persistedLevel && task.id === `task-${task.itemId}`) task.id = `task-${task.itemId}-${persistedLevel}`;
               if (resetProcessingTasks && task.status === "processing" /* PROCESSING */) {
-                task.status = "pending" /* PENDING */;
-                task.progress = 0;
+                const wasUserAborted = task.error === LLM_REQUEST_ABORT_MESSAGE || task.errorDetails === TASK_ABORT_DETAIL || task.workflowStage === "\u6B63\u5728\u7EC8\u6B62";
+                if (wasUserAborted) {
+                  task.status = "failed" /* FAILED */;
+                  task.progress = 0;
+                  task.workflowStage = "\u5DF2\u7EC8\u6B62";
+                  task.completedAt = task.completedAt || /* @__PURE__ */ new Date();
+                  abortedTaskRecoveryCount += 1;
+                } else {
+                  task.status = "pending" /* PENDING */;
+                  task.progress = 0;
+                }
+              }
+              if (["pending", "priority"].includes(task.status) && task.options?.workflowLevel) {
+                task.options = resolveWorkflowTaskContract(task.options, { allowRegister: false });
               }
               this.tasks.set(task.id, task);
             }
             this.lastLoadedSnapshotAt = snapshotAt || null;
+            if (abortedTaskRecoveryCount > 0) {
+              void this.saveToStorage();
+              logTaskQueue(`[AI-Butler] Recovered aborted tasks from persisted queue: ${abortedTaskRecoveryCount}`);
+            }
             logTaskQueue(`\u4ECE\u5B58\u50A8\u52A0\u8F7D ${this.tasks.size} \u4E2A\u4EFB\u52A1`);
           } catch (error) {
             logTaskQueue(`\u52A0\u8F7D\u4EFB\u52A1\u961F\u5217\u5931\u8D25: ${error}`);
@@ -37051,8 +37914,22 @@ ${stack}`.toLowerCase();
         running = false;
         /** 附件未就绪的待观察父条目集合 */
         pendingParents = /* @__PURE__ */ new Set();
+        /** 已评分但正在等待 L1 或附件就绪的 L2 条目 */
+        pendingL2Parents = /* @__PURE__ */ new Set();
+        /** 已评分且尚未完成 L1 的条目；L1 完成后继续评级对应的后续层级。 */
+        pendingRatedL1Parents = /* @__PURE__ */ new Set();
+        /** 5 星且正在等待前序任务或附件就绪的 L3 条目 */
+        pendingL3Parents = /* @__PURE__ */ new Set();
+        /** 任务完成监听的取消函数 */
+        taskCompletionUnsubscribe = null;
         /** 轮询重试计时器 */
         retryTimers = /* @__PURE__ */ new Map();
+        /** Style 评级通知的兜底扫描计时器 */
+        ratingPollTimer = null;
+        /** 只检查近期修改的评分条目，避免首次启动时扫入历史文献 */
+        recentRatingWindowMs = 15 * 60 * 1e3;
+        /** 主窗口中的 Style 评级点击监听器 */
+        ratingClickHandlers = /* @__PURE__ */ new Map();
         /**
          * 私有构造函数（单例模式）
          */
@@ -37075,9 +37952,9 @@ ${stack}`.toLowerCase();
             ztoolkit.log("[AutoScan] \u5DF2\u5728\u8FD0\u884C\u4E2D");
             return;
           }
-          const enabled = getPref("autoScan");
+          const enabled = isWorkflowAutoScanEnabled() || isWorkflowRatingEnabled();
           if (!enabled) {
-            ztoolkit.log("[AutoScan] \u81EA\u52A8\u626B\u63CF\u5DF2\u7981\u7528");
+            ztoolkit.log("[AutoScan] 新增扫描与评分工作流均已禁用");
             return;
           }
           this.notifierID = Zotero.Notifier.registerObserver(
@@ -37089,8 +37966,20 @@ ${stack}`.toLowerCase();
             ["item"],
             "ai-butler-auto-scan"
           );
+          const taskQueue = TaskQueueManager.getInstance();
+          this.taskCompletionUnsubscribe = taskQueue.onComplete(async (taskId, success) => {
+            if (!success || !isWorkflowRatingEnabled()) return;
+            const task = taskQueue.getTask(taskId);
+            if (!task || !this.pendingRatedL1Parents.has(task.itemId) && !this.pendingL2Parents.has(task.itemId) && !this.pendingL3Parents.has(task.itemId)) return;
+            this.pendingRatedL1Parents.delete(task.itemId);
+            this.pendingL2Parents.delete(task.itemId);
+            this.pendingL3Parents.delete(task.itemId);
+            const item = await Zotero.Items.getAsync(task.itemId);
+            if (item) await this.enqueueRatedWorkflow(item, { manualRepair: task.options?.manualRepair === true });
+          });
           this.running = true;
-          ztoolkit.log("[AutoScan] \u81EA\u52A8\u626B\u63CF\u5DF2\u542F\u52A8");
+          if (isWorkflowRatingEnabled()) this.scheduleRecentRatedL2Scan(3e3);
+          ztoolkit.log(`[AutoScan] 工作流监听已启动: role=${getWorkflowDeviceRole()}, auto=${isWorkflowAutoScanEnabled()}, rating=${isWorkflowRatingEnabled()}`);
         }
         /**
          * 停止自动扫描监听
@@ -37103,16 +37992,58 @@ ${stack}`.toLowerCase();
             Zotero.Notifier.unregisterObserver(this.notifierID);
             this.notifierID = null;
           }
+          if (this.taskCompletionUnsubscribe) {
+            this.taskCompletionUnsubscribe();
+            this.taskCompletionUnsubscribe = null;
+          }
+          if (this.ratingPollTimer) {
+            clearTimeout(this.ratingPollTimer);
+            this.ratingPollTimer = null;
+          }
+          for (const timer of this.retryTimers.values()) clearTimeout(timer);
+          this.retryTimers.clear();
+          this.pendingParents.clear();
+          this.pendingRatedL1Parents.clear();
+          this.pendingL2Parents.clear();
+          this.pendingL3Parents.clear();
           this.running = false;
           ztoolkit.log("[AutoScan] \u81EA\u52A8\u626B\u63CF\u5DF2\u505C\u6B62");
+        }
+        /** 直接监听 Style 的星级列，避免其保存操作遗漏 Notifier 通知。 */
+        bindStyleRatingClickFallback(win) {
+          if (!win?.document || this.ratingClickHandlers.has(win)) return;
+          const handler = (event) => {
+            const target = event?.target;
+            if (!target?.classList?.contains("star")) return;
+            setTimeout(async () => {
+              try {
+                if (!isWorkflowRatingEnabled()) return;
+                const selectedItems = win.ZoteroPane?.getSelectedItems?.() || [];
+                for (const item of selectedItems) {
+                  if (this.shouldProcess(item)) await this.enqueueRatedWorkflow(item);
+                }
+              } catch (error) {
+                ztoolkit.log("[AutoScan] Style rating click fallback failed:", error);
+              }
+            }, 1200);
+          };
+          win.document.addEventListener("click", handler, false);
+          this.ratingClickHandlers.set(win, handler);
+        }
+        unbindStyleRatingClickFallback(win) {
+          const handler = this.ratingClickHandlers.get(win);
+          if (!handler) return;
+          win.document?.removeEventListener("click", handler, false);
+          this.ratingClickHandlers.delete(win);
         }
         /**
          * 处理 Zotero 通知事件
          */
         async handleNotify(event, type, ids, extraData) {
           if (type !== "item") return;
-          const enabled = getPref("autoScan");
-          if (!enabled) {
+          const autoEnabled = isWorkflowAutoScanEnabled();
+          const ratingEnabled = isWorkflowRatingEnabled();
+          if (!autoEnabled && !ratingEnabled) {
             this.stop();
             return;
           }
@@ -37121,19 +38052,26 @@ ${stack}`.toLowerCase();
               const id = rawId;
               const item = await Zotero.Items.getAsync(id);
               if (!item) continue;
-              if (event === "add" && this.shouldProcess(item)) {
+              if (autoEnabled && event === "add" && this.shouldProcess(item)) {
                 await this.delay(2e3);
                 await this.enqueueIfReady(item);
                 continue;
               }
               if (event === "add" && item.isAttachment && item.isAttachment()) {
                 const parentID = item.parentID;
-                if (parentID && this.pendingParents.has(parentID)) {
+                if (autoEnabled && parentID) {
                   const parent = await Zotero.Items.getAsync(parentID);
-                  if (parent) {
+                  if (parent && this.shouldProcess(parent)) {
                     await this.enqueueIfReady(parent);
                   }
                 }
+                if (ratingEnabled && parentID && (this.pendingRatedL1Parents.has(parentID) || this.pendingL2Parents.has(parentID) || this.pendingL3Parents.has(parentID))) {
+                  const parent = await Zotero.Items.getAsync(parentID);
+                  if (parent) await this.enqueueRatedWorkflow(parent);
+                }
+              }
+              if (ratingEnabled && event === "modify" && this.shouldProcess(item)) {
+                await this.enqueueRatedWorkflow(item);
               }
             }
           } catch (error) {
@@ -37169,7 +38107,7 @@ ${stack}`.toLowerCase();
           try {
             const raw = getPref("customPrompts") || "";
             const customPrompts = raw.trim() ? JSON.parse(raw) : {};
-            const prompt = customPrompts[promptName];
+            const prompt = customPrompts[promptName] || customPrompts[getLegacyWorkflowPromptName(promptName)];
             if (typeof prompt === "string" && prompt.trim()) {
               return prompt;
             }
@@ -37179,6 +38117,216 @@ ${stack}`.toLowerCase();
           ztoolkit.log(`[AutoScan] 未找到提示词模板: ${promptName}`);
           return null;
         }
+        /** 从自定义提示词中读取星级触发的 L2 模板。 */
+        getAutoL2Prompt() {
+          const promptName = "L2：Evidence Card";
+          try {
+            const raw = getPref("customPrompts") || "";
+            const customPrompts = raw.trim() ? JSON.parse(raw) : {};
+            const prompt = customPrompts[promptName] || customPrompts[getLegacyWorkflowPromptName(promptName)];
+            if (typeof prompt === "string" && prompt.trim()) return prompt;
+          } catch (error) {
+            ztoolkit.log("[AutoScan] 读取 L2 提示词失败:", error);
+          }
+          ztoolkit.log(`[AutoScan] 未找到 L2 提示词模板: ${promptName}`);
+          return null;
+        }
+        /** 从自定义提示词中读取 5 星自动触发的 L3 模板。 */
+        getAutoL3Prompt() {
+          const promptName = "L3：Deep Reading";
+          try {
+            const raw = getPref("customPrompts") || "";
+            const customPrompts = raw.trim() ? JSON.parse(raw) : {};
+            const prompt = customPrompts[promptName] || customPrompts[getLegacyWorkflowPromptName(promptName)];
+            if (typeof prompt === "string" && prompt.trim()) return prompt;
+          } catch (error) {
+            ztoolkit.log("[AutoScan] 读取 L3 提示词失败:", error);
+          }
+          ztoolkit.log(`[AutoScan] 未找到 L3 提示词模板: ${promptName}`);
+          return null;
+        }
+        /** Ethereal Style 将星级保存为 Extra 字段中的 rate: 1-5。 */
+        getItemRating(item) {
+          const extra = String(item.getField?.("extra") || "");
+          const match = extra.match(/(?:^|\r?\n)\s*rate\s*:\s*([1-5])\s*(?=\r?\n|$)/i);
+          return match ? Number(match[1]) : 0;
+        }
+        /** Style 评分通知不稳定时，只扫描最近修改且已评分的条目作为兜底。 */
+        scheduleRecentRatedL2Scan(delayMs = 1e4) {
+          if (!isWorkflowRatingEnabled()) return;
+          if (this.ratingPollTimer) clearTimeout(this.ratingPollTimer);
+          this.ratingPollTimer = setTimeout(async () => {
+            this.ratingPollTimer = null;
+            await this.scanRecentRatedL2Items();
+            if (this.running && isWorkflowRatingEnabled()) this.scheduleRecentRatedL2Scan(1e4);
+          }, delayMs);
+        }
+        async scanRecentRatedL2Items() {
+          if (!isWorkflowRatingEnabled()) return;
+          try {
+            const search = new Zotero.Search();
+            search.addCondition("extra", "contains", "rate:");
+            const ids = await search.search();
+            const cutoff = Date.now() - this.recentRatingWindowMs;
+            for (const id of ids) {
+              const item = await Zotero.Items.getAsync(id);
+              if (!item || !this.shouldProcess(item) || this.getItemRating(item) < 1) continue;
+              const rawDate = item.dateModified;
+              const dateText = String(rawDate || "");
+              const modifiedAt = rawDate instanceof Date ? rawDate.getTime() : Date.parse(dateText.includes("T") ? dateText : `${dateText.replace(" ", "T")}Z`);
+              if (!Number.isFinite(modifiedAt) || modifiedAt < cutoff) continue;
+              await this.enqueueRatedWorkflow(item);
+            }
+          } catch (error) {
+            ztoolkit.log("[AutoScan] Recent rated L2 fallback scan failed:", error);
+          }
+        }
+        /** Unified tri-state workflow artifact checks. */
+        async getWorkflowLevelState(item, level) {
+          return detectWorkflowLevelState(item, level);
+        }
+        async hasL2Summary(item) {
+          return (await this.getWorkflowLevelState(item, "L2")).state === WORKFLOW_ARTIFACT_COMPLETE;
+        }
+        async hasL1Summary(item) {
+          const ownState = await this.getWorkflowLevelState(item, "L1");
+          if (ownState.state === WORKFLOW_ARTIFACT_COMPLETE) return true;
+          if (ownState.state === WORKFLOW_ARTIFACT_UNKNOWN) return false;
+          return hasCompletedL1Summary(item);
+        }
+        async hasL3Summary(item) {
+          return (await this.getWorkflowLevelState(item, "L3")).state === WORKFLOW_ARTIFACT_COMPLETE;
+        }
+        /** 评分达到 2 星时追加 L2；L1 正在排队或执行时延后到其完成后。 */
+        async enqueueL2IfRated(item, runOptions = {}) {
+          if (this.getItemRating(item) < 2) return;
+          const l2State = await this.getWorkflowLevelState(item, "L2");
+          if (l2State.state !== WORKFLOW_ARTIFACT_MISSING) {
+            if (l2State.state === WORKFLOW_ARTIFACT_UNKNOWN) ztoolkit.log(`[AutoScan] L2 state unknown; not auto-queued: ${item.getField("title")}`);
+            return;
+          }
+          const prompt = this.getAutoL2Prompt();
+          if (!prompt) return;
+          if (!await this.hasUsablePDFAttachment(item)) {
+            this.pendingL2Parents.add(item.id);
+            ztoolkit.log(`[AutoScan] L2 等待本地 PDF: ${item.getField("title")}`);
+            return;
+          }
+          const taskQueue = TaskQueueManager.getInstance();
+          const existingTask = taskQueue.getActiveSummaryTaskForItem(item.id);
+          if (existingTask && ["pending", "priority", "processing"].includes(existingTask.status)) {
+            this.pendingL2Parents.add(item.id);
+            ztoolkit.log(`[AutoScan] L2 等待当前任务完成: ${item.getField("title")}`);
+            return;
+          }
+          this.pendingL2Parents.delete(item.id);
+          await taskQueue.addTask(item, false, {
+            prompt,
+            summaryMode: "single",
+            noteStrategy: "append",
+            workflowLevel: "L2",
+            workflowContractTrusted: true,
+            endpointId: getWorkflowEndpointId("L2"),
+            manualRepair: runOptions.manualRepair === true,
+            taskIntent: runOptions.manualRepair === true ? "repair-missing" : "workflow"
+          });
+          this.scheduleQueuedTaskStart(taskQueue);
+          ztoolkit.log(`[AutoScan] 评级 ${this.getItemRating(item)} 星，已加入 L2: ${item.getField("title")}`);
+        }
+        /** 评分达到 5 星时追加 L3；若 L1/L2 正在执行则在其完成后自动衔接。 */
+        async enqueueL3IfRated(item, runOptions = {}) {
+          if (this.getItemRating(item) < 5) return;
+          const l3State = await this.getWorkflowLevelState(item, "L3");
+          if (l3State.state !== WORKFLOW_ARTIFACT_MISSING) {
+            if (l3State.state === WORKFLOW_ARTIFACT_UNKNOWN) ztoolkit.log(`[AutoScan] L3 state unknown; not auto-queued: ${item.getField("title")}`);
+            return;
+          }
+          const prompt = this.getAutoL3Prompt();
+          if (!prompt) return;
+          if (!await this.hasUsablePDFAttachment(item)) {
+            this.pendingL3Parents.add(item.id);
+            ztoolkit.log(`[AutoScan] L3 等待本地 PDF: ${item.getField("title")}`);
+            return;
+          }
+          const taskQueue = TaskQueueManager.getInstance();
+          const existingTask = taskQueue.getActiveSummaryTaskForItem(item.id);
+          if (existingTask && ["pending", "priority", "processing"].includes(existingTask.status)) {
+            this.pendingL3Parents.add(item.id);
+            ztoolkit.log(`[AutoScan] L3 等待当前任务完成: ${item.getField("title")}`);
+            return;
+          }
+          this.pendingL3Parents.delete(item.id);
+          await taskQueue.addTask(item, false, {
+            prompt,
+            summaryMode: "single",
+            noteStrategy: "append",
+            workflowLevel: "L3",
+            workflowContractTrusted: true,
+            endpointId: getWorkflowEndpointId("L3"),
+            manualRepair: runOptions.manualRepair === true,
+            taskIntent: runOptions.manualRepair === true ? "repair-missing" : "workflow"
+          });
+          this.scheduleQueuedTaskStart(taskQueue);
+          ztoolkit.log(`[AutoScan] 评级 5 星，已加入 L3: ${item.getField("title")}`);
+        }
+        /** 对已评分但缺少 L1 的条目先补做 L1；已有 AI Note 时也采用追加策略。 */
+        async enqueueL1IfMissingForRating(item, runOptions = {}) {
+          const l1State = await this.getWorkflowLevelState(item, "L1");
+          if (l1State.state === WORKFLOW_ARTIFACT_COMPLETE) return true;
+          if (l1State.state === WORKFLOW_ARTIFACT_UNKNOWN) {
+            ztoolkit.log(`[AutoScan] L1 state unknown; not auto-queued: ${item.getField("title")}`);
+            return false;
+          }
+          const completedL1State = await getCompletedL1State(item);
+          if (completedL1State.state === WORKFLOW_ARTIFACT_COMPLETE) return true;
+          if (completedL1State.state === WORKFLOW_ARTIFACT_UNKNOWN) return false;
+          const prompt = this.getAutoScanPrompt();
+          if (!prompt) return false;
+          if (!await this.hasUsablePDFAttachment(item)) {
+            this.pendingRatedL1Parents.add(item.id);
+            ztoolkit.log(`[AutoScan] 评级工作流的 L1 等待本地 PDF: ${item.getField("title")}`);
+            return false;
+          }
+          const taskQueue = TaskQueueManager.getInstance();
+          const existingTask = taskQueue.getActiveSummaryTaskForItem(item.id);
+          if (existingTask && ["pending", "priority", "processing"].includes(existingTask.status)) {
+            this.pendingRatedL1Parents.add(item.id);
+            ztoolkit.log(`[AutoScan] 评级工作流的 L1 等待当前任务完成: ${item.getField("title")}`);
+            return false;
+          }
+          this.pendingRatedL1Parents.add(item.id);
+          await taskQueue.addTask(item, false, {
+            prompt,
+            summaryMode: "single",
+            noteStrategy: "append",
+            workflowLevel: "L1",
+            workflowContractTrusted: true,
+            endpointId: getWorkflowEndpointId("L1"),
+            manualRepair: runOptions.manualRepair === true,
+            taskIntent: runOptions.manualRepair === true ? "repair-missing" : "workflow"
+          });
+          this.scheduleQueuedTaskStart(taskQueue);
+          ztoolkit.log(`[AutoScan] 评级 ${this.getItemRating(item)} 星且缺少 L1，已加入 L1: ${item.getField("title")}`);
+          return false;
+        }
+        /** 在完成回调中追加后稍后再检查队列，避免队列刚停止而遗留 pending 任务。 */
+        scheduleQueuedTaskStart(taskQueue) {
+          setTimeout(() => {
+            try {
+              const hasQueuedTask = taskQueue.getAllTasks().some((task) => ["pending", "priority"].includes(task.status));
+              if (hasQueuedTask) taskQueue.start();
+            } catch (error) {
+              ztoolkit.log("[AutoScan] 重新唤醒任务队列失败:", error);
+            }
+          }, 250);
+        }
+        /** 按星级串行安排：缺少 L1 时先 L1；2-4 星为 L1 后 L2，5 星为 L1 后 L2 后 L3。 */
+        async enqueueRatedWorkflow(item, runOptions = {}) {
+          if (this.getItemRating(item) < 1) return;
+          if (!await this.enqueueL1IfMissingForRating(item, runOptions)) return;
+          await this.enqueueL2IfRated(item, runOptions);
+          await this.enqueueL3IfRated(item, runOptions);
+        }
         /** 判断是否存在可用的 PDF 附件 */
         async hasUsablePDFAttachment(item) {
           try {
@@ -37187,12 +38335,8 @@ ${stack}`.toLowerCase();
               const att = await Zotero.Items.getAsync(aid);
               if (!att || !att.isAttachment()) continue;
               const mime = att.attachmentMIMEType || "";
-              const file = await att.getFile?.();
-              if (mime === "application/pdf" && file) {
-                return true;
-              }
-              const path2 = att.getFilePath?.() || "";
-              if (path2 && /\.pdf$/i.test(path2)) {
+              const path2 = await att.getFilePathAsync?.();
+              if (mime === "application/pdf" && path2) {
                 return true;
               }
             }
@@ -37202,13 +38346,17 @@ ${stack}`.toLowerCase();
         }
         /** 如果条目附件已就绪且需要 AI，则入队；否则进入待观察并轮询重试 */
         async enqueueIfReady(item) {
-          if (await this.hasExistingAINote(item)) return;
+          const l1State = await getCompletedL1State(item);
+          if (l1State.state !== WORKFLOW_ARTIFACT_MISSING) {
+            if (l1State.state === WORKFLOW_ARTIFACT_UNKNOWN) ztoolkit.log(`[AutoScan] L1 state unknown; not auto-queued: ${item.getField("title")}`);
+            return;
+          }
           const prompt = this.getAutoScanPrompt();
           if (!prompt) return;
           if (await this.hasUsablePDFAttachment(item)) {
             this.pendingParents.delete(item.id);
             const tqm = TaskQueueManager.getInstance();
-            await tqm.addTask(item, false, { prompt, summaryMode: "single" });
+            await tqm.addTask(item, false, { prompt, summaryMode: "single", noteStrategy: "append", workflowLevel: "L1", workflowContractTrusted: true, endpointId: getWorkflowEndpointId("L1") });
             ztoolkit.log(
               `[AutoScan] \u81EA\u52A8\u52A0\u5165 L1 \u4EFB\u52A1: ${item.getField("title")}`
             );
@@ -37234,6 +38382,7 @@ ${stack}`.toLowerCase();
           const delayMs = Math.min(3e4, 2e3 * Math.pow(2, attempts));
           const timer = setTimeout(async () => {
             try {
+              if (!this.running || !isWorkflowAutoScanEnabled()) return;
               const latest = await Zotero.Items.getAsync(item.id);
               if (latest) {
                 await this.enqueueIfReady(latest);
@@ -37283,11 +38432,17 @@ ${stack}`.toLowerCase();
          * 重新加载配置（用于设置更改后刷新）
          */
         reload() {
-          const enabled = getPref("autoScan");
+          const enabled = isWorkflowAutoScanEnabled() || isWorkflowRatingEnabled();
           if (enabled && !this.running) {
             this.start();
           } else if (!enabled && this.running) {
             this.stop();
+          } else if (enabled && this.running) {
+            if (this.ratingPollTimer) {
+              clearTimeout(this.ratingPollTimer);
+              this.ratingPollTimer = null;
+            }
+            if (isWorkflowRatingEnabled()) this.scheduleRecentRatedL2Scan(1e3);
           }
         }
         /** 小延时工具 */
@@ -42184,6 +43339,8 @@ ${stack}`.toLowerCase();
         ${task.completedAt ? `<br/>\u5B8C\u6210\u65F6\u95F4: ${task.completedAt.toLocaleString("zh-CN")}` : ""}
         ${safeError ? `<br/><span style="color: #f44336;">\u9519\u8BEF: ${safeError}</span>` : ""}
         ${task.retryCount > 0 ? `<br/>\u91CD\u8BD5\u6B21\u6570: ${task.retryCount}` : ""}
+        ${!isImageSummary && !isMindmap && task.taskType !== "tableFill" && task.taskType !== "review" && !isTargetedQuestion && task.workflowStage ? `<br/><strong style="color: #1976d2;">\u9636\u6BB5: ${task.workflowStage}</strong>` : ""}
+        ${formatWorkflowTiming(task.timings) ? `<br/><strong style="color: #5f6368;">\u8017\u65F6: ${formatWorkflowTiming(task.timings)}</strong>` : ""}
         ${isImageSummary && task.workflowStage ? `<br/><strong style="color: #9c27b0;">\u9636\u6BB5: ${task.workflowStage}</strong>` : ""}
         ${isMindmap && task.workflowStage ? `<br/><strong style="color: #4caf50;">\u9636\u6BB5: ${task.workflowStage}</strong>` : ""}
         ${task.taskType === "tableFill" && task.workflowStage ? `<br/><strong style="color: #ff9800;">\u9636\u6BB5: ${task.workflowStage}</strong>` : ""}
@@ -42539,14 +43696,17 @@ ${stack}`.toLowerCase();
             if (this.manager) {
               await this.manager.removeTask(taskId);
             }
-          } finally {
-            const index = this.tasks.findIndex((t) => t.id === taskId);
-            if (index !== -1) {
-              this.tasks.splice(index, 1);
-            }
-            this.updateStats();
-            this.renderTaskList();
+          } catch (error) {
+            logTaskQueue(`[AI-Butler] \u5220\u9664\u4EFB\u52A1\u5931\u8D25: ${error}`);
+            this.syncFromManager();
+            return;
           }
+          const index = this.tasks.findIndex((t) => t.id === taskId);
+          if (index !== -1) {
+            this.tasks.splice(index, 1);
+          }
+          this.updateStats();
+          this.renderTaskList();
         }
         /**
          * 重试任务
@@ -50429,6 +51589,14 @@ ${sanitizeQuickChatDomString(markdown)}`;
     });
     return resizeHandle;
   }
+  function getSidebarNoteRecency(note) {
+    const raw = note?.dateModified;
+    if (raw instanceof Date) return raw.getTime();
+    if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+    const text2 = String(raw || "").trim();
+    const parsed = Date.parse(text2 && !text2.includes("T") ? `${text2.replace(" ", "T")}Z` : text2);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
   async function resolveSidebarSummaryNote(item) {
     let targetItem = item;
     if (item.isAttachment && item.isAttachment()) {
@@ -57874,6 +59042,9 @@ ${"${question}"}
     const streamCheckbox = doc2.getElementById(
       "zotero-prefpane-ai-butler-stream"
     );
+    const workflowDeviceRoleSelect = doc2.getElementById(
+      "zotero-prefpane-ai-butler-workflowDeviceRole"
+    );
     const openaiApiKey = getPref("openaiApiKey") || "";
     const openaiApiUrl = getPref("openaiApiUrl") || "https://api.openai.com/v1/responses";
     const openaiApiModel = getPref("openaiApiModel") || "gpt-5";
@@ -57893,9 +59064,13 @@ ${"${question}"}
       }
     }
     if (streamCheckbox) streamCheckbox.checked = !!stream;
+    if (workflowDeviceRoleSelect) workflowDeviceRoleSelect.value = getWorkflowDeviceRole();
   }
   function bindPrefEvents(win) {
     const doc2 = win.document;
+    const workflowDeviceRoleSelect = doc2.getElementById(
+      "zotero-prefpane-ai-butler-workflowDeviceRole"
+    );
     const apiKeyInput = doc2.getElementById(
       "zotero-prefpane-ai-butler-openaiApiKey"
     );
@@ -57956,6 +59131,12 @@ ${"${question}"}
       streamCheckbox.addEventListener("change", save);
       streamCheckbox.addEventListener("blur", save);
     }
+    if (workflowDeviceRoleSelect) {
+      const save = () => applyWorkflowDeviceRole(workflowDeviceRoleSelect.value);
+      workflowDeviceRoleSelect.addEventListener("command", save);
+      workflowDeviceRoleSelect.addEventListener("change", save);
+      workflowDeviceRoleSelect.addEventListener("select", save);
+    }
     win.addEventListener("unload", () => {
       if (apiKeyInput) setPref("openaiApiKey", apiKeyInput.value || "");
       if (apiUrlInput) setPref("openaiApiUrl", apiUrlInput.value || "");
@@ -57968,6 +59149,9 @@ ${"${question}"}
           promptTextarea.value || getDefaultSummaryPrompt()
         );
       if (streamCheckbox) setPref("stream", !!streamCheckbox.checked);
+      if (workflowDeviceRoleSelect) applyWorkflowDeviceRole(
+        workflowDeviceRoleSelect.value
+      );
     });
   }
   function initializeDefaultPrefs() {
@@ -57978,6 +59162,10 @@ ${"${question}"}
       temperature: "0.7",
       reasoningEffort: "default",
       stream: true,
+      workflowL1EndpointName: "Gemma4 12B qat",
+      workflowDeviceRole: "reader-standby",
+      workflowDeviceRoleMigrationVersion: "",
+      ratingWorkflowEnabled: true,
       summaryPrompt: getDefaultSummaryPrompt(),
       promptVersion: PROMPT_VERSION,
       // 文献综述表格填写相关
@@ -59387,6 +60575,7 @@ ${"${question}"}
       `${addon.data.config.addonRef}-preferences.ftl`
     );
     registerContextMenuItem();
+    AutoScanManager.getInstance().bindStyleRatingClickFallback(win);
     bindUICustomizationRefreshEvent(win);
     registerLibraryToolbarButton(win);
     if (!addon.data.startupPopupShown) {
@@ -59460,6 +60649,10 @@ ${"${question}"}
       // 默认温度参数,平衡创造性和准确性
       reasoningEffort: "default",
       stream: true,
+      workflowL1EndpointName: "Gemma4 12B qat",
+      workflowDeviceRole: "reader-standby",
+      workflowDeviceRoleMigrationVersion: "",
+      ratingWorkflowEnabled: true,
       // 默认启用流式输出,提供更好的用户体验
       summaryPrompt: getDefaultSummaryPrompt(),
       // 加载默认提示词模板
@@ -59497,6 +60690,10 @@ ${"${question}"}
           ztoolkit.log(`[AI-Butler] \u542F\u52A8\u65F6\u5F3A\u5236\u8BBE\u7F6E\u914D\u7F6E\u5931\u8D25: ${key}`, e);
         }
       }
+    }
+    if (String(getPref("workflowDeviceRoleMigrationVersion") || "") !== "3") {
+      applyWorkflowDeviceRole(getWorkflowDeviceRole(), false);
+      setPref("workflowDeviceRoleMigrationVersion", "3");
     }
     LLMEndpointManager.getEndpoints();
   }
@@ -59986,6 +61183,45 @@ ${"${question}"}
           getVisibility: () => isContextMenuItemEnabled("workflowPreset") && isRegularItemSelection()
         }
       },
+      supplementL1DataAvailability: {
+        scope: "item",
+        options: {
+          tag: "menuitem",
+          id: CONTEXT_MENU_DOM_IDS.supplementL1DataAvailability,
+          label: "补充 L1 数据开放标签",
+          icon: menuIcon,
+          commandListener: async () => {
+            await handleSelectedItemsL1DataAvailabilitySupplement();
+          },
+          getVisibility: () => isContextMenuItemEnabled("supplementL1DataAvailability") && isRegularItemSelection()
+        }
+      },
+      repairManagedTags: {
+        scope: "item",
+        options: {
+          tag: "menuitem",
+          id: CONTEXT_MENU_DOM_IDS.repairManagedTags,
+          label: "修复重复或格式相似的 AI 标签",
+          icon: menuIcon,
+          commandListener: async () => {
+            await handleSelectedItemsManagedTagRepair();
+          },
+          getVisibility: () => isContextMenuItemEnabled("repairManagedTags") && isRegularItemSelection()
+        }
+      },
+      organizeWorkflowNotes: {
+        scope: "item",
+        options: {
+          tag: "menuitem",
+          id: CONTEXT_MENU_DOM_IDS.organizeWorkflowNotes,
+          label: "整理 L1/L2/L3 AI 笔记",
+          icon: menuIcon,
+          commandListener: async () => {
+            await handleSelectedItemsWorkflowNoteOrganization();
+          },
+          getVisibility: () => isContextMenuItemEnabled("organizeWorkflowNotes") && isRegularItemSelection()
+        }
+      },
       generateSummary: {
         scope: "item",
         options: {
@@ -60108,6 +61344,45 @@ ${"${question}"}
             await handleCollectionL1Summary();
           },
           getVisibility: () => isContextMenuItemEnabled("collectionL1Summary")
+        }
+      },
+      collectionSupplementL1DataAvailability: {
+        scope: "collection",
+        options: {
+          tag: "menuitem",
+          id: CONTEXT_MENU_DOM_IDS.collectionSupplementL1DataAvailability,
+          label: "补充已有 L1 的数据开放标签",
+          icon: menuIcon,
+          commandListener: async () => {
+            await handleCollectionL1DataAvailabilitySupplement();
+          },
+          getVisibility: () => isContextMenuItemEnabled("collectionSupplementL1DataAvailability")
+        }
+      },
+      collectionRepairManagedTags: {
+        scope: "collection",
+        options: {
+          tag: "menuitem",
+          id: CONTEXT_MENU_DOM_IDS.collectionRepairManagedTags,
+          label: "批量修复重复或格式相似的 AI 标签",
+          icon: menuIcon,
+          commandListener: async () => {
+            await handleCollectionManagedTagRepair();
+          },
+          getVisibility: () => isContextMenuItemEnabled("collectionRepairManagedTags")
+        }
+      },
+      collectionRatedWorkflowRepair: {
+        scope: "collection",
+        options: {
+          tag: "menuitem",
+          id: CONTEXT_MENU_DOM_IDS.collectionRatedWorkflowRepair,
+          label: "扫描已评分文献并补齐 L1/L2/L3",
+          icon: menuIcon,
+          commandListener: async () => {
+            await handleCollectionRatedWorkflowRepair();
+          },
+          getVisibility: () => isContextMenuItemEnabled("collectionRatedWorkflowRepair") && isWorkflowCoordinator()
         }
       },
       literatureReview: {
@@ -60405,16 +61680,723 @@ ${"${question}"}
       }).show();
     }
   }
+  function getLegacyWorkflowPromptName(presetName) {
+    const aliases = {
+      "L1：One Sentence": "L1",
+      "L1:One Sentence": "L1",
+      "L2：Evidence Card": "L2",
+      "L2:Evidence Card": "L2",
+      "L3：Deep Reading": "L3",
+      "L3:Deep Reading": "L3"
+    };
+    return aliases[presetName] || presetName;
+  }
+  function getWorkflowPromptFingerprint(prompt) {
+    const normalized = String(prompt || "").replace(/\r\n/g, "\n").trim();
+    let hash = 2166136261;
+    for (let i = 0; i < normalized.length; i++) { hash ^= normalized.charCodeAt(i); hash = Math.imul(hash, 16777619); }
+    return `fnv1a32:${(hash >>> 0).toString(16).padStart(8, "0")}:${normalized.length}`;
+  }
+  function getWorkflowContractRegistry() {
+    try {
+      const raw = String(getPref("workflowContractRegistry") || "").trim();
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch { return {}; }
+  }
+  function resolveWorkflowTaskContract(options, resolverOptions = {}) {
+    const level = String(options?.workflowLevel || "").toUpperCase();
+    if (!["L1", "L2", "L3"].includes(level)) return options;
+    const presetId = String(options?.workflowPresetId || `ai-butler-${level.toLowerCase()}`);
+    const promptFingerprint = options?.workflowPromptFingerprint || getWorkflowPromptFingerprint(options?.prompt || "");
+    const registry = getWorkflowContractRegistry();
+    const registered = registry[presetId];
+    if (!registered && resolverOptions.allowRegister !== false && options?.workflowContractTrusted === true && options?.prompt) {
+      registry[presetId] = { promptFingerprint, contractVersion: "l123-tags-v1", registeredAt: (/* @__PURE__ */ new Date()).toISOString() };
+      setPref("workflowContractRegistry", JSON.stringify(registry));
+    }
+    const effective = registry[presetId];
+    const isKnownDefault = Boolean(effective && effective.contractVersion === "l123-tags-v1" && effective.promptFingerprint === promptFingerprint);
+    return { ...options || {}, workflowLevel: level, workflowPresetId: presetId, workflowPromptFingerprint: promptFingerprint, workflowContractVersion: isKnownDefault ? "l123-tags-v1" : "compatible-unversioned", workflowContractTrusted: void 0 };
+  }
+  function buildWorkflowRequestPrompt(prompt, workflowLevel) {
+    const source = String(prompt || "").trim();
+    if (!source) return source;
+    let requestPrompt = source;
+    if (workflowLevel === "L1" && !requestPrompt.includes("AI_BUTLER_L1_DATA_AVAILABILITY_V1")) {
+      requestPrompt += `
+
+---
+AI_BUTLER_L1_DATA_AVAILABILITY_V1
+在最终 JSON 块之前增加且只增加以下两行：
+DATA_AVAILABILITY: <Public|ControlledAccess|AvailableOnRequest|NotPublic|NotReported|NotApplicable>
+DATA_ACCESSION: <GEO/SRA/ENA/ArrayExpress/dbGaP/EGA/其他稳定数据库编号或 Not reported>
+判定规则：
+- Public：正文明确提供可公开访问的稳定数据库、公开链接或 accession；复用公开数据也属于 Public。
+- ControlledAccess：需要审批、申请或受控访问。
+- AvailableOnRequest：正文明确说明依合理请求提供。
+- NotPublic：正文明确说明数据不公开、仅内部保存或不可获得。
+- NotReported：论文涉及测序、组学或其他可复用数据，但未找到明确开放说明。
+- NotApplicable：论文没有生成或分析需要公开存储的测序、组学或类似数据。
+不得根据“data available”之类模糊措辞猜测 Public；没有 accession 或明确公开位置时优先 NotReported。`;
+    }
+    if (!requestPrompt.includes("AI_BUTLER_FINAL_OUTPUT_ONLY_V1")) {
+      requestPrompt += `
+
+---
+AI_BUTLER_FINAL_OUTPUT_ONLY_V1
+只输出最终的 L1/L2/L3 结果。不要输出推理过程、分析草稿、内部计划、工具调用、进度日志，也不要输出 <think>、<thinking>、<reasoning> 或 <analysis> 标签。`;
+    }
+    return requestPrompt;
+  }
   function getWorkflowPresetPrompt(presetName) {
     if (!presetName) return null;
     try {
       const presets = JSON.parse(getPref("customPrompts") || "{}");
-      const prompt = presets?.[presetName];
+      const prompt = presets?.[presetName] || presets?.[getLegacyWorkflowPromptName(presetName)];
       return typeof prompt === "string" && prompt.trim() ? prompt.trim() : null;
     } catch (error) {
       ztoolkit.log("[AI-Butler] 读取阅读层级提示词失败:", error);
       return null;
     }
+  }
+  const WORKFLOW_ROLE_COORDINATOR_QWEN = "coordinator-qwen";
+  const WORKFLOW_ROLE_STANDBY_QWEN = "standby-qwen";
+  const WORKFLOW_ROLE_READER_STANDBY = "reader-standby";
+  const WORKFLOW_ROLE_EMERGENCY_GEMMA_L1 = "emergency-gemma-l1";
+  const WORKFLOW_ROLE_AUTO_QWEN = "auto-qwen-worker";
+  const WORKFLOW_ROLE_MANUAL_LOCAL = "manual-local-fallback";
+  const WORKFLOW_ROLE_MANUAL_QWEN = "manual-qwen";
+  const LEGACY_WORKFLOW_ROLE_MAC_AUTO_QWEN = "mac-auto-qwen";
+  const LEGACY_WORKFLOW_ROLE_WINDOWS_MANUAL_LOCAL = "windows-manual-local";
+  function normalizeWorkflowDeviceRole(role) {
+    const value = String(role || "").trim();
+    if (value === WORKFLOW_ROLE_COORDINATOR_QWEN || value === WORKFLOW_ROLE_AUTO_QWEN || value === LEGACY_WORKFLOW_ROLE_MAC_AUTO_QWEN) {
+      return WORKFLOW_ROLE_COORDINATOR_QWEN;
+    }
+    if (value === WORKFLOW_ROLE_STANDBY_QWEN) return WORKFLOW_ROLE_STANDBY_QWEN;
+    if (value === WORKFLOW_ROLE_EMERGENCY_GEMMA_L1) return WORKFLOW_ROLE_EMERGENCY_GEMMA_L1;
+    if (value === WORKFLOW_ROLE_READER_STANDBY || value === WORKFLOW_ROLE_MANUAL_QWEN || value === WORKFLOW_ROLE_MANUAL_LOCAL || value === LEGACY_WORKFLOW_ROLE_WINDOWS_MANUAL_LOCAL) {
+      return WORKFLOW_ROLE_READER_STANDBY;
+    }
+    return WORKFLOW_ROLE_READER_STANDBY;
+  }
+  function getWorkflowDeviceRole() {
+    return normalizeWorkflowDeviceRole(getPref("workflowDeviceRole"));
+  }
+  function isWorkflowCoordinator() {
+    return getWorkflowDeviceRole() === WORKFLOW_ROLE_COORDINATOR_QWEN;
+  }
+  function isWorkflowQwenLocalRole() {
+    const role = getWorkflowDeviceRole();
+    return role === WORKFLOW_ROLE_COORDINATOR_QWEN || role === WORKFLOW_ROLE_STANDBY_QWEN;
+  }
+  function isWorkflowAutoScanEnabled() {
+    const role = getWorkflowDeviceRole();
+    return (role === WORKFLOW_ROLE_COORDINATOR_QWEN || role === WORKFLOW_ROLE_EMERGENCY_GEMMA_L1) && getPref("autoScan") !== false;
+  }
+  function isWorkflowRatingEnabled() {
+    return isWorkflowCoordinator() && getPref("ratingWorkflowEnabled") !== false;
+  }
+  function applyWorkflowDeviceRole(role, reload = true) {
+    const normalized = normalizeWorkflowDeviceRole(role);
+    const autoEnabled = normalized === WORKFLOW_ROLE_COORDINATOR_QWEN || normalized === WORKFLOW_ROLE_EMERGENCY_GEMMA_L1;
+    const ratingEnabled = normalized === WORKFLOW_ROLE_COORDINATOR_QWEN;
+    const usesGemmaL1 = normalized === WORKFLOW_ROLE_READER_STANDBY || normalized === WORKFLOW_ROLE_EMERGENCY_GEMMA_L1;
+    setPref("workflowDeviceRole", normalized);
+    setPref("autoScan", autoEnabled);
+    setPref("ratingWorkflowEnabled", ratingEnabled);
+    setPref("workflowL1EndpointName", usesGemmaL1 ? "Gemma4 12B qat" : "Qwen");
+    ensureWorkflowEndpointConfiguration();
+    if (reload) AutoScanManager.getInstance().reload();
+    ztoolkit.log(`[AI-Butler] Device role applied: ${normalized}; auto=${autoEnabled}; rating=${ratingEnabled}`);
+    return normalized;
+  }
+  function getWorkflowL1EndpointName() {
+    const role = getWorkflowDeviceRole();
+    return role === WORKFLOW_ROLE_READER_STANDBY || role === WORKFLOW_ROLE_EMERGENCY_GEMMA_L1 ? "Gemma4 12B qat" : "Qwen";
+  }
+  function getWorkflowEndpointName(workflowLevel) {
+    const role = getWorkflowDeviceRole();
+    if (role === WORKFLOW_ROLE_COORDINATOR_QWEN || role === WORKFLOW_ROLE_STANDBY_QWEN) return "Qwen";
+    if (workflowLevel === "L1") return getWorkflowL1EndpointName();
+    return "Qwen";
+  }
+  /** Only reader-mode manual L1 may use the remote Qwen fallback. Coordinators stay local. */
+  function getWorkflowFallbackEndpointId(workflowLevel, primaryEndpointId) {
+    const fallbackName = workflowLevel === "L1" && getWorkflowDeviceRole() === WORKFLOW_ROLE_READER_STANDBY && getWorkflowL1EndpointName() === "Gemma4 12B qat" ? "Qwen" : "";
+    if (!fallbackName) return void 0;
+    const fallback = LLMEndpointManager.getEndpoints().find((item) => item.name === fallbackName);
+    if (!fallback || fallback.id === primaryEndpointId || !fallback.enabled || !LLMEndpointManager.isEndpointUsable(fallback)) return void 0;
+    return fallback.id;
+  }
+  /** Workflow routing is role-scoped and never follows the global default-model selector. */
+  function getWorkflowEndpointId(workflowLevel) {
+    const endpointName = getWorkflowEndpointName(workflowLevel);
+    const endpoint = LLMEndpointManager.getEndpoints().find((item) => item.name === endpointName);
+    if (endpoint?.enabled && LLMEndpointManager.isEndpointUsable(endpoint)) return endpoint.id;
+    const fallbackEndpointId = getWorkflowFallbackEndpointId(workflowLevel, endpoint?.id);
+    if (fallbackEndpointId) {
+      ztoolkit.log(`[AI-Butler] ${workflowLevel} primary endpoint unavailable; using configured fallback`);
+      return fallbackEndpointId;
+    }
+    if (!endpoint) throw new Error(`${workflowLevel} 首选模型「${endpointName}」不存在，且备用模型不可用`);
+    throw new Error(`${workflowLevel} 首选模型「${endpointName}」未启用或配置不完整，且备用模型不可用`);
+  }
+  /**
+   * Ensure the shared XPI has the endpoint slots required by each role.
+   * Remote addresses and API keys are always user-managed and are never
+   * embedded in the distributable source or XPI.
+   */
+  function ensureWorkflowEndpointConfiguration() {
+    const endpoints = LLMEndpointManager.getEndpoints();
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const usesLocalQwen = isWorkflowQwenLocalRole();
+    const qwenApiUrl = usesLocalQwen ? "http://127.0.0.1:9527/v1" : "";
+    const required = [
+      { id: "endpoint-mt3x3vrq-8i8adkgt", name: "Gemma4 12B qat", providerType: "openai-compat", apiUrl: "http://127.0.0.1:1122/v1/chat/completions", model: "google/gemma-4-12b-qat", enabled: true },
+      { id: "endpoint-mt43ukid-vnpqi96u", name: "Qwen", providerType: "openai-compat", apiUrl: qwenApiUrl, model: "Qwen3.6-27B-AWQ-Hermes-256K", enabled: usesLocalQwen },
+      { id: "endpoint-legacy-primary", name: "OpenAI 兼容 (Chat Completions)", providerType: "openai-compat", apiUrl: "", model: "gemma-4-31b-it-claude-opus-distill-v2", enabled: false }
+    ];
+    let changed = false;
+    for (const template of required) {
+      let endpoint = endpoints.find((item) => item.name === template.name);
+      if (!endpoint) {
+        endpoint = { ...template, reasoningEffort: "default", pdfProcessMode: "mineru", createdAt: now, updatedAt: now };
+        endpoints.push(endpoint);
+        changed = true;
+      }
+      if (template.name === "Qwen" && usesLocalQwen && endpoint.apiUrl !== qwenApiUrl) {
+        endpoint.apiUrl = qwenApiUrl;
+        endpoint.updatedAt = now;
+        changed = true;
+      }
+    }
+    if (changed) LLMEndpointManager.saveEndpoints(endpoints);
+    const route = isWorkflowQwenLocalRole() ? "L1/L2/L3=Qwen(local)" : getWorkflowDeviceRole() === WORKFLOW_ROLE_EMERGENCY_GEMMA_L1 ? "auto L1=Gemma4(local); L2/L3=off" : "standby";
+    Zotero.debug(`[AI-Butler] Workflow endpoints ready: role=${getWorkflowDeviceRole()}, ${route}`);
+  }
+  var WORKFLOW_ARTIFACT_COMPLETE = "complete";
+  var WORKFLOW_ARTIFACT_UNKNOWN = "unknown";
+  var WORKFLOW_ARTIFACT_MISSING = "missing";
+  function workflowNoteVisibleText(noteHtml) {
+    return String(noteHtml || "").replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ").replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ").replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>|<\/div>|<\/li>|<\/h[1-6]>/gi, "\n").replace(/<[^>]*>/g, " ").replace(/&nbsp;|&#160;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'").replace(/[ \t]+/g, " ").replace(/\n\s*\n+/g, "\n").trim();
+  }
+  function workflowMarkerHasContent(text2, markerRe) {
+    const match = markerRe.exec(text2);
+    if (!match) return false;
+    const tail = text2.slice(match.index + match[0].length).split(/\n?\s*\[(?:L1|L2|L3)\]\s*/i)[0].replace(/ZOTERO_TAGS_JSON_START[\s\S]*$/i, "").replace(/^\s*[:：\-–—]\s*/, "").trim();
+    return tail.replace(/[\s\p{P}\p{S}]/gu, "").length >= 4;
+  }
+  function workflowLevelRecognized(text2, level) {
+    if (level === "L1") {
+      return workflowMarkerHasContent(text2, /\[L1\]\s*One\s*Sentence/i) || workflowMarkerHasContent(text2, /(?:^|\n)\s*SUMMARY\s*:/i);
+    }
+    if (level === "L2") {
+      return workflowMarkerHasContent(text2, /\[L2\]\s*Evidence\s*Card/i) || workflowMarkerHasContent(text2, /(?:^|\n)\s*(?:L2\s*[:：\-]?\s*)?Evidence\s*Card/i);
+    }
+    if (level === "L3") {
+      return workflowMarkerHasContent(text2, /\[L3\]\s*Deep\s*Reading/i) || workflowMarkerHasContent(text2, /(?:^|\n)\s*(?:L3\s*[:：\-]?\s*)?Deep\s*Reading/i);
+    }
+    return false;
+  }
+  /** One source of truth for old and current L1/L2/L3 artifacts. */
+  async function detectWorkflowLevelState(item, level) {
+    const normalizedLevel = String(level || "").toUpperCase();
+    if (!["L1", "L2", "L3"].includes(normalizedLevel)) {
+      return { state: WORKFLOW_ARTIFACT_UNKNOWN, reason: "unsupported-level" };
+    }
+    let hasCompletionTag = false;
+    let readFailed = false;
+    try {
+      hasCompletionTag = (item.getTags?.() || []).some((tag) => tag.tag === `AI:${normalizedLevel}`);
+    } catch (error) {
+      readFailed = true;
+    }
+    let noteIDs;
+    try {
+      noteIDs = item.getNotes?.() || [];
+    } catch (error) {
+      return { state: WORKFLOW_ARTIFACT_UNKNOWN, reason: "note-list-read-failed" };
+    }
+    for (const noteID of noteIDs) {
+      try {
+        const note = await Zotero.Items.getAsync(noteID);
+        if (!note) {
+          readFailed = true;
+          continue;
+        }
+        const noteHtml = note.getNote?.() || "";
+        const noteTags = note.getTags?.() || [];
+        const text2 = workflowNoteVisibleText(noteHtml);
+        const explicitLayerMarker = /\[(?:L1|L2|L3)\]|(?:^|\n)\s*(?:(?:L2\s*[:：\-]?\s*)?Evidence\s*Card|(?:L3\s*[:：\-]?\s*)?Deep\s*Reading)/i.test(text2);
+        if ((isRegularSummaryNote(noteTags, noteHtml) || explicitLayerMarker) && workflowLevelRecognized(text2, normalizedLevel)) {
+          return { state: WORKFLOW_ARTIFACT_COMPLETE, reason: "recognized-note", noteKey: note.key, noteId: note.id };
+        }
+      } catch (error) {
+        readFailed = true;
+        ztoolkit.log(`[AI-Butler] Failed to read ${normalizedLevel} candidate note ${noteID}:`, error);
+      }
+    }
+    if (readFailed) return { state: WORKFLOW_ARTIFACT_UNKNOWN, reason: "note-read-failed" };
+    if (hasCompletionTag) return { state: WORKFLOW_ARTIFACT_UNKNOWN, reason: "tag-without-recognized-note" };
+    return { state: WORKFLOW_ARTIFACT_MISSING, reason: "recognized-note-missing" };
+  }
+  /** Check only this item's own tags and child AI Notes. */
+  async function hasDirectL1Summary(item) {
+    return (await detectWorkflowLevelState(item, "L1")).state === WORKFLOW_ARTIFACT_COMPLETE;
+  }
+  /** Reuse an existing L1 from an exact DOI match, or an exact-title duplicate without DOI. */
+  async function getCompletedL1State(item) {
+    const direct = await detectWorkflowLevelState(item, "L1");
+    if (direct.state === WORKFLOW_ARTIFACT_COMPLETE) return direct;
+    try {
+      const doi = String(item.getField?.("DOI") || "").trim().toLowerCase();
+      const title = String(item.getField?.("title") || "").trim();
+      if (!doi && !title) return direct;
+      const search = new Zotero.Search();
+      search.libraryID = item.libraryID;
+      search.addCondition(doi ? "DOI" : "title", "is", doi || title);
+      const itemIDs = await search.search();
+      for (const itemID of itemIDs) {
+        const duplicate = await Zotero.Items.getAsync(itemID);
+        if (!duplicate || duplicate.id === item.id) continue;
+        const regular = typeof duplicate.isRegularItem === "function" && duplicate.isRegularItem();
+        if (!regular) continue;
+        const duplicateState = await detectWorkflowLevelState(duplicate, "L1");
+        if (duplicateState.state !== WORKFLOW_ARTIFACT_COMPLETE) continue;
+        ztoolkit.log(`[AI-Butler] L1 去重：复用重复条目 ${duplicate.key || duplicate.id} 的已有结果`);
+        return { ...duplicateState, reason: "duplicate-item-artifact" };
+      }
+    } catch (error) {
+      ztoolkit.log("[AI-Butler] 跨条目检查既有 L1 失败:", error);
+      return { state: WORKFLOW_ARTIFACT_UNKNOWN, reason: "duplicate-search-failed" };
+    }
+    return direct;
+  }
+  async function hasCompletedL1Summary(item) {
+    return (await getCompletedL1State(item)).state === WORKFLOW_ARTIFACT_COMPLETE;
+  }
+  const WORKFLOW_NOTE_LEVEL_ORDER = ["L3", "L2", "L1"];
+  const WORKFLOW_NOTE_REQUIRED_SECTIONS = {
+    L1: ["SUMMARY"],
+    L2: ["One-Sentence Conclusion", "Research Question", "Study Design", "Biological Context", "Key Molecules / Pathways", "Direction", "Main Evidence", "Quantitative Evidence", "Evidence Level", "Mechanistic Chain", "Causality", "Key Limitation", "Review Role", "Safe Review Statement", "Identifier"],
+    L3: ["One-Sentence Conclusion", "Research Question & Knowledge Gap", "Study Architecture", "Evidence Card", "Main Findings", "Evidence Chain", "Mechanistic Model", "Evidence Boundary", "Evidence Level", "Statistical and Methodological Appraisal", "Key Strengths", "Key Limitations", "Review-Ready Statements", "Claims to Avoid", "Review Role", "Review Keywords"]
+  };
+  function normalizeWorkflowSectionLabel(value) {
+    return String(value || "").toLowerCase().replace(/[–—]/g, "-").replace(/\s*[/&]\s*/g, "/").replace(/^\s*\d+[.)、：:]\s*/, "").replace(/[：:]\s*$/, "").replace(/[^\p{L}\p{N}/-]+/gu, " ").trim();
+  }
+  function getWorkflowBlockLevel(block) {
+    const text2 = workflowNoteVisibleText(LLMNoteMetadataService.stripSidebarMetadata(block?.content || block?.rawHtml || ""));
+    const levels = WORKFLOW_NOTE_LEVEL_ORDER.filter((level) => workflowLevelRecognized(text2, level));
+    return levels.length === 1 ? levels[0] : "";
+  }
+  function getWorkflowBlockTimestamp(block, fallbackNote) {
+    const metadataStamp = Date.parse(String(block?.metadata?.generatedAt || ""));
+    if (Number.isFinite(metadataStamp)) return metadataStamp;
+    return getSidebarNoteRecency(fallbackNote);
+  }
+  function parseWorkflowBlockRecords(html, fallbackNote) {
+    const blocks = LLMNoteMetadataService.parseSummaryBlocks(String(html || ""));
+    return blocks.map((block, index) => ({
+      block,
+      level: getWorkflowBlockLevel(block),
+      timestamp: getWorkflowBlockTimestamp(block, fallbackNote),
+      rawHtml: String(block.rawHtml || block.content || "").trim(),
+      sourceIndex: index,
+      note: fallbackNote || null
+    })).filter((record) => record.rawHtml);
+  }
+  function orderWorkflowSummaryHtml(html) {
+    const records = parseWorkflowBlockRecords(html, null);
+    if (records.length <= 1) return String(html || "");
+    const priority = { L3: 0, L2: 1, L1: 2 };
+    records.sort((left, right) => {
+      const levelOrder = (priority[left.level] ?? 9) - (priority[right.level] ?? 9);
+      if (levelOrder) return levelOrder;
+      const recency = right.timestamp - left.timestamp;
+      if (recency) return recency;
+      return left.sourceIndex - right.sourceIndex;
+    });
+    return compactNoteHtml(records.map((record) => record.rawHtml).join("\n<hr/>\n"));
+  }
+  function workflowCandidateMetrics(record) {
+    const visible = workflowNoteVisibleText(LLMNoteMetadataService.stripSidebarMetadata(record.rawHtml));
+    const lines = visible.split(/\r?\n/).map(normalizeWorkflowSectionLabel).filter(Boolean);
+    const expected = WORKFLOW_NOTE_REQUIRED_SECTIONS[record.level] || [];
+    const sectionCount = expected.filter((section) => {
+      const wanted = normalizeWorkflowSectionLabel(section);
+      return lines.some((line) => line === wanted || line.startsWith(`${wanted} `));
+    }).length;
+    const markerStrength = record.level === "L1" ? /(?:^|\n)\s*SUMMARY\s*[:：]/i.test(visible) ? 1 : 0 : new RegExp(`\\[${record.level}\\]`, "i").test(visible) ? 1 : 0;
+    let fieldCount = 0;
+    if (/DATA_AVAILABILITY\s*[:：]/i.test(visible)) fieldCount += 1;
+    if (/DATA_ACCESSION\s*[:：]/i.test(visible)) fieldCount += 1;
+    if (/(?:Evidence\s*Level|证据等级)\s*[:：|-]?\s*E[0-5]\b/i.test(visible)) fieldCount += 1;
+    if (/\b(?:DOI|PMID|PMCID|GSE\d+|SR[APRX]\d+|E-MTAB-\d+)\b/i.test(visible)) fieldCount += 1;
+    if (/\b(?:n\s*=|p\s*[<=>]|OR\s*[=:]|HR\s*[=:]|CI\s*[=:])\s*[0-9.]/i.test(visible)) fieldCount += 1;
+    const meaningfulLength = Array.from(visible.replace(/\s+/g, "")).length;
+    const lengthCap = record.level === "L1" ? 1800 : record.level === "L2" ? 14000 : 28000;
+    return { sectionCount, expectedSections: expected.length, markerStrength, fieldCount, lengthScore: Math.min(meaningfulLength, lengthCap), meaningfulLength };
+  }
+  function compareWorkflowCandidates(left, right) {
+    const a = left.metrics || workflowCandidateMetrics(left);
+    const b2 = right.metrics || workflowCandidateMetrics(right);
+    for (const key of ["sectionCount", "markerStrength", "fieldCount", "lengthScore"]) {
+      const delta = b2[key] - a[key];
+      if (delta) return delta;
+    }
+    const recency = right.timestamp - left.timestamp;
+    if (recency) return recency;
+    return right.sourceIndex - left.sourceIndex;
+  }
+  function selectBestWorkflowCandidates(records) {
+    const winners = /* @__PURE__ */ new Map();
+    for (const level of WORKFLOW_NOTE_LEVEL_ORDER) {
+      const candidates = records.filter((record) => record.level === level).map((record) => ({ ...record, metrics: workflowCandidateMetrics(record) }));
+      candidates.sort(compareWorkflowCandidates);
+      if (candidates.length) winners.set(level, candidates[0]);
+    }
+    return winners;
+  }
+  function formatWorkflowCandidatePreview(candidate) {
+    if (!candidate) return "无";
+    const metrics = candidate.metrics || workflowCandidateMetrics(candidate);
+    const dateLabel = candidate.timestamp ? new Date(candidate.timestamp).toLocaleString("zh-CN") : "未知时间";
+    return `${metrics.sectionCount}/${metrics.expectedSections} 个标准章节，${metrics.meaningfulLength} 字符，${dateLabel}`;
+  }
+  async function buildWorkflowNoteOrganizationPlan(item) {
+    const noteIDs = item.getNotes?.() || [];
+    const eligibleNotes = [];
+    const records = [];
+    let skippedMixedNotes = 0;
+    for (const noteID of noteIDs) {
+      const note = await Zotero.Items.getAsync(noteID);
+      if (!note) continue;
+      const noteHtml = note.getNote?.() || "";
+      if (!isRegularSummaryNote(note.getTags?.() || [], noteHtml)) continue;
+      const noteRecords = parseWorkflowBlockRecords(noteHtml, note);
+      const workflowRecords = noteRecords.filter((record) => record.level);
+      if (!workflowRecords.length) continue;
+      if (noteRecords.some((record) => !record.level)) {
+        skippedMixedNotes += 1;
+        continue;
+      }
+      eligibleNotes.push({ note, originalHtml: noteHtml });
+      records.push(...workflowRecords);
+    }
+    if (!records.length || !eligibleNotes.length) return null;
+    const winners = selectBestWorkflowCandidates(records);
+    const orderedWinners = WORKFLOW_NOTE_LEVEL_ORDER.map((level) => winners.get(level)).filter(Boolean);
+    const orderedHtml = compactNoteHtml(orderedWinners.map((record) => record.rawHtml).join("\n<hr/>\n"));
+    eligibleNotes.sort((left, right) => getSidebarNoteRecency(right.note) - getSidebarNoteRecency(left.note) || Number(right.note.id || 0) - Number(left.note.id || 0));
+    const target = eligibleNotes[0];
+    const redundantNoteIDs = eligibleNotes.slice(1).map((entry) => entry.note.id);
+    const counts = Object.fromEntries(WORKFLOW_NOTE_LEVEL_ORDER.map((level) => [level, records.filter((record) => record.level === level).length]));
+    const duplicateBlocksRemoved = records.length - orderedWinners.length;
+    const needsChange = redundantNoteIDs.length > 0 || compactNoteHtml(target.originalHtml) !== orderedHtml;
+    return { item, targetNote: target.note, targetOriginalHtml: target.originalHtml, orderedHtml, redundantNoteIDs, counts, winners, duplicateBlocksRemoved, skippedMixedNotes, needsChange };
+  }
+  async function applyWorkflowNoteOrganizationPlan(plan) {
+    if (typeof Zotero.Items.trashTx !== "function") throw new Error("当前 Zotero 不支持可恢复的笔记移入废纸篓操作，已取消整理");
+    const latestTarget = await Zotero.Items.getAsync(plan.targetNote.id);
+    if (!latestTarget || String(latestTarget.getNote?.() || "") !== String(plan.targetOriginalHtml || "")) {
+      throw new Error("目标 AI 笔记在预览后发生变化，请重新运行整理");
+    }
+    const backup = new Zotero.Item("note");
+    backup.libraryID = plan.item.libraryID;
+    backup.parentID = plan.item.id;
+    backup.setNote(plan.targetOriginalHtml);
+    backup.addTag("AI-Butler-Workflow-Backup");
+    await backup.saveTx();
+    latestTarget.setNote(plan.orderedHtml);
+    if (!(latestTarget.getTags?.() || []).some((entry) => entry.tag === "AI-Generated")) latestTarget.addTag("AI-Generated");
+    await latestTarget.saveTx();
+    await Zotero.Items.trashTx([backup.id, ...plan.redundantNoteIDs]);
+    return { backupId: backup.id, trashed: plan.redundantNoteIDs.length + 1 };
+  }
+  async function handleSelectedItemsWorkflowNoteOrganization() {
+    try {
+      const items = (Zotero.getActiveZoteroPane().getSelectedItems() || []).filter((item) => item?.isRegularItem?.());
+      if (!items.length) {
+        showAIButlerToast("请先选择文献条目", "error");
+        return;
+      }
+      const plans = [];
+      for (const item of items) {
+        const plan = await buildWorkflowNoteOrganizationPlan(item);
+        if (plan?.needsChange) plans.push(plan);
+      }
+      if (!plans.length) {
+        showAIButlerToast("检查完成：所选文献的 L1/L2/L3 笔记无需整理。", "success", 5000);
+        return;
+      }
+      const examples = plans.slice(0, 5).map((plan) => {
+        const title = String(plan.item.getField?.("title") || plan.item.key || plan.item.id).slice(0, 72);
+        const counts = WORKFLOW_NOTE_LEVEL_ORDER.map((level) => `${level} ${plan.counts[level] || 0}→${plan.winners.has(level) ? 1 : 0}`).join("，");
+        return `${title}\n  ${counts}；淘汰结果 ${plan.duplicateBlocksRemoved} 个；其他笔记移入废纸篓 ${plan.redundantNoteIDs.length} 条`;
+      });
+      const winnerPreview = plans.length === 1 ? `\n\n保留版本：\nL3：${formatWorkflowCandidatePreview(plans[0].winners.get("L3"))}\nL2：${formatWorkflowCandidatePreview(plans[0].winners.get("L2"))}\nL1：${formatWorkflowCandidatePreview(plans[0].winners.get("L1"))}` : "";
+      const skipped = plans.reduce((sum, plan) => sum + plan.skippedMixedNotes, 0);
+      const confirmed = Services.prompt.confirm(
+        Zotero.getMainWindow(),
+        "整理 L1/L2/L3 AI 笔记",
+        `将整理 ${plans.length} 篇文献。每层按“标准章节完整度 → 关键信息覆盖 → 有效长度 → 时间”选择最佳版本，并按 L3、L2、L1 排列。\n\n被替换的目标原文和多余 AI 笔记会移入 Zotero 废纸篓，可恢复。混有普通总结的笔记将跳过（${skipped} 条）。\n\n${examples.join("\n\n")}${winnerPreview}\n\n是否继续？`
+      );
+      if (!confirmed) return;
+      let completed = 0;
+      const failures = [];
+      for (const plan of plans) {
+        try {
+          await applyWorkflowNoteOrganizationPlan(plan);
+          completed += 1;
+        } catch (error) {
+          failures.push(`${plan.item.getField?.("title") || plan.item.key || plan.item.id}: ${error?.message || error}`);
+          ztoolkit.log("[AI-Butler] 整理 L1/L2/L3 笔记失败:", plan.item.id, error);
+        }
+      }
+      const failureText = failures.length ? `；失败 ${failures.length} 篇：${failures.slice(0, 3).join("；")}` : "";
+      showAIButlerToast(`L1/L2/L3 笔记整理完成：成功 ${completed} 篇${failureText}`, failures.length ? "warning" : "success", failures.length ? 9000 : 6000);
+    } catch (error) {
+      ztoolkit.log("[AI-Butler] 扫描 L1/L2/L3 笔记失败:", error);
+      showAIButlerToast(`整理失败：${error?.message || error}`, "error", 7000);
+    }
+  }
+  const MANAGED_TAG_PREFIX_MAP = {
+    ai: "AI:",
+    data: "Data:",
+    evidence: "Evidence:",
+    disease: "Disease:",
+    tissue: "Tissue:",
+    cell: "Cell:",
+    gene: "Gene:",
+    pathway: "Pathway:",
+    exposure: "Exposure:",
+    intervention: "Intervention:",
+    method: "Method:",
+    phenotype: "Phenotype:",
+    species: "Species:",
+    design: "Design:"
+  };
+  function normalizeManagedTagText(value) {
+    let text2 = String(value || "");
+    try {
+      text2 = text2.normalize("NFKC");
+    } catch {
+    }
+    return text2.replace(/\s+/g, " ").trim();
+  }
+  function parseManagedTagForRepair(rawTag) {
+    const original = String(rawTag || "");
+    const normalized = normalizeManagedTagText(original);
+    const match = normalized.match(/^([^:：]+)\s*[:：]\s*(.+)$/u);
+    if (!match) return null;
+    const prefix = MANAGED_TAG_PREFIX_MAP[match[1].trim().toLocaleLowerCase()];
+    if (!prefix) return null;
+    let payload = normalizeManagedTagText(match[2]).replace(/^[,;，；]+|[,;，；]+$/g, "").trim();
+    if (!payload || payload.length > 100) return null;
+    if (prefix === "AI:") {
+      const fixed = payload.match(/^L([123])$/i);
+      if (!fixed) return null;
+      payload = `L${fixed[1]}`;
+    } else if (prefix === "Data:") {
+      const dataKey = payload.toLocaleLowerCase().replace(/[^a-z]/g, "");
+      const values = { public: "Public", controlledaccess: "ControlledAccess", availableonrequest: "AvailableOnRequest", notpublic: "NotPublic", notreported: "NotReported", notapplicable: "NotApplicable" };
+      if (!values[dataKey]) return null;
+      payload = values[dataKey];
+    } else if (prefix === "Evidence:") {
+      const fixed = payload.match(/^E([0-5])$/i);
+      if (!fixed) return null;
+      payload = `E${fixed[1]}`;
+    } else if (prefix === "Species:") {
+      const speciesKey = payload.toLocaleLowerCase().replace(/[\s._-]+/g, "");
+      if (["human", "humans", "homosapiens", "hsapiens"].includes(speciesKey)) payload = "Homo sapiens";
+      if (["mouse", "mice", "musmusculus", "mmusculus"].includes(speciesKey)) payload = "Mus musculus";
+    }
+    const canonical = `${prefix}${payload}`;
+    let similarityPayload = normalizeManagedTagText(payload).replace(/[\p{P}\p{S}\s_]+/gu, "");
+    if (prefix !== "Gene:") similarityPayload = similarityPayload.toLocaleLowerCase();
+    if (!similarityPayload) return null;
+    return { original, prefix, payload, canonical, similarityKey: `${prefix}${similarityPayload}` };
+  }
+  function managedTagPreferenceScore(entry) {
+    let score = entry.canonical.length;
+    if (entry.original === entry.canonical) score += 1e3;
+    if (/^[A-Z0-9-]+$/.test(entry.payload) && entry.prefix === "Gene:") score += 100;
+    return score;
+  }
+  function buildManagedTagRepairPlan(items) {
+    const regularItems = (items || []).filter((item) => item?.isRegularItem?.());
+    const groups = /* @__PURE__ */ new Map();
+    const itemTags = /* @__PURE__ */ new Map();
+    let managedTagCount = 0;
+    for (const item of regularItems) {
+      const tags = (item.getTags?.() || []).map((entry) => entry.tag).filter(Boolean);
+      itemTags.set(item.id, new Set(tags));
+      for (const tag of tags) {
+        const parsed = parseManagedTagForRepair(tag);
+        if (!parsed) continue;
+        managedTagCount += 1;
+        const group = groups.get(parsed.similarityKey) || [];
+        group.push({ ...parsed, item });
+        groups.set(parsed.similarityKey, group);
+      }
+    }
+    const operations = /* @__PURE__ */ new Map();
+    const examples = [];
+    let variantGroupCount = 0;
+    for (const entries of groups.values()) {
+      const preferred = [...entries].sort((left, right) => managedTagPreferenceScore(right) - managedTagPreferenceScore(left) || right.canonical.localeCompare(left.canonical))[0].canonical;
+      const variants = [...new Set(entries.map((entry) => entry.original))];
+      if (variants.length > 1 || variants[0] !== preferred) {
+        variantGroupCount += 1;
+        if (examples.length < 6) examples.push(`${variants.join(" / ")} → ${preferred}`);
+      }
+      for (const entry of entries) {
+        if (entry.original === preferred) continue;
+        const operation = operations.get(entry.item.id) || { item: entry.item, remove: /* @__PURE__ */ new Set(), add: /* @__PURE__ */ new Set() };
+        operation.remove.add(entry.original);
+        if (!itemTags.get(entry.item.id)?.has(preferred)) operation.add.add(preferred);
+        operations.set(entry.item.id, operation);
+      }
+    }
+    const actionable = [...operations.values()].filter((operation) => operation.remove.size || operation.add.size);
+    return {
+      scannedItemCount: regularItems.length,
+      managedTagCount,
+      variantGroupCount,
+      operations: actionable,
+      removeCount: actionable.reduce((sum, operation) => sum + operation.remove.size, 0),
+      addCount: actionable.reduce((sum, operation) => sum + operation.add.size, 0),
+      examples
+    };
+  }
+  async function runManagedTagRepair(items, scopeLabel) {
+    try {
+      const plan = buildManagedTagRepairPlan(items);
+      if (!plan.operations.length) {
+        showAIButlerToast(`检查完成：${plan.scannedItemCount} 篇文献的 ${plan.managedTagCount} 个受管标签无需修复。`, "success", 5000);
+        return;
+      }
+      const exampleText = plan.examples.length ? `\n\n示例：\n${plan.examples.join("\n")}` : "";
+      const confirmed = Services.prompt.confirm(
+        Zotero.getMainWindow(),
+        "修复重复或格式相似的 AI 标签",
+        `${scopeLabel}：扫描 ${plan.scannedItemCount} 篇文献、${plan.managedTagCount} 个受管标签。\n\n将修复 ${plan.operations.length} 篇文献中的 ${plan.variantGroupCount} 组格式变体；移除 ${plan.removeCount} 个旧写法，补入 ${plan.addCount} 个统一写法。不会处理星级和用户自建标签。${exampleText}\n\n是否继续？`
+      );
+      if (!confirmed) return;
+      let changedItems = 0;
+      for (const operation of plan.operations) {
+        for (const tag of operation.remove) operation.item.removeTag?.(tag);
+        for (const tag of operation.add) operation.item.addTag(tag);
+        await operation.item.saveTx();
+        changedItems += 1;
+      }
+      showAIButlerToast(`标签修复完成：更新 ${changedItems} 篇文献，移除 ${plan.removeCount} 个旧写法，补入 ${plan.addCount} 个统一写法。`, "success", 6500);
+    } catch (error) {
+      ztoolkit.log("[AI-Butler] 批量修复受管标签失败:", error);
+      showAIButlerToast(`标签修复失败：${error?.message || error}`, "error", 6500);
+    }
+  }
+  async function handleSelectedItemsManagedTagRepair() {
+    const items = Zotero.getActiveZoteroPane().getSelectedItems() || [];
+    if (!items.length) {
+      showAIButlerToast("请先选择文献条目", "error");
+      return;
+    }
+    await runManagedTagRepair(items, "所选条目");
+  }
+  async function handleCollectionManagedTagRepair() {
+    const collection = Zotero.getActiveZoteroPane().getSelectedCollection();
+    if (!collection) {
+      showAIButlerToast("请先选择一个分类", "error");
+      return;
+    }
+    await runManagedTagRepair(collection.getChildItems(), `分类「${collection.name}」`);
+  }
+  function hasManagedDataAvailabilityTag(item) {
+    return (item.getTags?.() || []).some((entry) => /^Data:(?:Public|ControlledAccess|AvailableOnRequest|NotPublic|NotReported|NotApplicable)$/.test(entry.tag));
+  }
+  async function collectL1DataAvailabilityCandidates(items) {
+    const candidates = [];
+    const summary = { scanned: 0, noL1: 0, unknownL1: 0, alreadyTagged: 0, invalid: 0 };
+    for (const item of items || []) {
+      summary.scanned += 1;
+      if (!item?.isRegularItem?.()) {
+        summary.invalid += 1;
+        continue;
+      }
+      if (hasManagedDataAvailabilityTag(item)) {
+        summary.alreadyTagged += 1;
+        continue;
+      }
+      const l1State = await detectWorkflowLevelState(item, "L1");
+      if (l1State.state === WORKFLOW_ARTIFACT_UNKNOWN) {
+        summary.unknownL1 += 1;
+        continue;
+      }
+      if (l1State.state !== WORKFLOW_ARTIFACT_COMPLETE) {
+        summary.noL1 += 1;
+        continue;
+      }
+      candidates.push(item);
+    }
+    return { candidates, summary };
+  }
+  async function runL1DataAvailabilitySupplement(items, scopeLabel) {
+    try {
+      const { candidates, summary } = await collectL1DataAvailabilityCandidates(items);
+      if (!candidates.length) {
+        showAIButlerToast(`没有需要补充的条目。已有标签 ${summary.alreadyTagged} 篇；没有可识别 L1 ${summary.noL1} 篇；L1 状态待确认 ${summary.unknownL1} 篇。`, "default", 5500);
+        return;
+      }
+      const confirmed = candidates.length === 1 || Services.prompt.confirm(
+        Zotero.getMainWindow(),
+        "补充 L1 数据开放标签",
+        `${scopeLabel}中有 ${candidates.length} 篇已完成 L1 但缺少数据开放标签。\n\n将优先读取已有 L1；旧笔记没有该字段时才调用 L1 模型。不会新增或改写 L1 笔记。是否继续？`
+      );
+      if (!confirmed) return;
+      showAIButlerToast(`开始补充 ${candidates.length} 篇文献的数据开放标签...`, "default", 2500);
+      const result = { tagged: 0, fromNote: 0, fromModel: 0, failed: 0, failures: [] };
+      for (const item of candidates) {
+        try {
+          const supplemented = await NoteGenerator.supplementL1DataAvailabilityTag(item);
+          result.tagged += 1;
+          if (supplemented.source === "existing-note") result.fromNote += 1;
+          else result.fromModel += 1;
+        } catch (error) {
+          result.failed += 1;
+          if (result.failures.length < 3) {
+            result.failures.push(`${item.getField?.("title") || item.key || item.id}: ${error?.message || error}`);
+          }
+          ztoolkit.log("[AI-Butler] 补充 L1 数据开放标签失败:", item.id, error);
+        }
+      }
+      const failureText = result.failures.length ? `\n失败示例：${result.failures.join("；")}` : "";
+      new ztoolkit.ProgressWindow("AI Butler", { closeOnClick: true, closeTime: result.failed ? 9000 : 5500 }).createLine({
+        text: `数据开放标签补充完成：成功 ${result.tagged} 篇（复用已有 L1 ${result.fromNote}，调用模型 ${result.fromModel}），失败 ${result.failed} 篇。${failureText}`,
+        type: result.failed ? "warning" : "success"
+      }).show();
+    } catch (error) {
+      ztoolkit.log("[AI-Butler] 扫描 L1 数据开放标签失败:", error);
+      showAIButlerToast(`补充失败：${error?.message || error}`, "error", 6500);
+    }
+  }
+  async function handleSelectedItemsL1DataAvailabilitySupplement() {
+    const items = Zotero.getActiveZoteroPane().getSelectedItems() || [];
+    if (!items.length) {
+      showAIButlerToast("请先选择文献条目", "error");
+      return;
+    }
+    await runL1DataAvailabilitySupplement(items, "所选条目");
+  }
+  async function handleCollectionL1DataAvailabilitySupplement() {
+    const collection = Zotero.getActiveZoteroPane().getSelectedCollection();
+    if (!collection) {
+      showAIButlerToast("请先选择一个分类", "error");
+      return;
+    }
+    await runL1DataAvailabilitySupplement(collection.getChildItems(), `分类「${collection.name}」`);
   }
   async function handleGenerateSummary(presetName) {
     const workflowPrompt = getWorkflowPresetPrompt(presetName);
@@ -60476,11 +62458,22 @@ ${endpointDetails}`,
       const manager = TaskQueueManager.getInstance();
       const priority = items.length === 1;
       if (workflowPrompt) {
+        const workflowLevel = presetName === "L1：One Sentence" ? "L1" : presetName === "L2：Evidence Card" ? "L2" : presetName === "L3：Deep Reading" ? "L3" : void 0;
+        const endpointId = workflowLevel ? getWorkflowEndpointId(workflowLevel) : void 0;
         for (const item of items) {
+          if (workflowLevel === "L1" && (await getCompletedL1State(item)).state !== WORKFLOW_ARTIFACT_MISSING) {
+            continue;
+          }
           await manager.addTask(item, priority, {
-            forceOverwrite: true,
+            forceOverwrite: workflowLevel ? false : true,
             prompt: workflowPrompt,
-            summaryMode: "single"
+            summaryMode: "single",
+            noteStrategy: workflowLevel ? "append" : void 0,
+            workflowLevel,
+            workflowContractTrusted: Boolean(workflowLevel),
+            endpointId,
+            manualRepair: Boolean(workflowLevel),
+            taskIntent: workflowLevel ? "manual-rerun" : void 0
           });
         }
       } else {
@@ -60528,6 +62521,10 @@ ${endpointDetails}`,
           skipped++;
           continue;
         }
+        if ((await getCompletedL1State(item)).state !== WORKFLOW_ARTIFACT_MISSING) {
+          skipped++;
+          continue;
+        }
         const attachments = item.getAttachments?.() || [];
         let hasPDF = false;
         for (const attachmentID of attachments) {
@@ -60560,7 +62557,7 @@ ${endpointDetails}`,
       const confirmed = Services.prompt.confirm(
         Zotero.getMainWindow(),
         "L1 批量文献总结",
-        `将对「${collection.name}」中 ${candidates.length} 篇 PDF 文献运行 L1，并在完成后自动写入标签。\n\n已有 AI 笔记会追加 L1 结果；非文献条目和无 PDF 条目会跳过。是否继续？`
+        `将对「${collection.name}」中 ${candidates.length} 篇 PDF 文献运行 L1，并在完成后自动写入标签。\n\n已有 L1 结果会跳过；已有其他 AI 笔记但缺少 L1 时会追加 L1；非文献条目和无 PDF 条目会跳过。是否继续？`
       );
       if (!confirmed) return;
       const manager = TaskQueueManager.getInstance();
@@ -60568,7 +62565,12 @@ ${endpointDetails}`,
         await manager.addTask(item, false, {
           prompt: workflowPrompt,
           summaryMode: "single",
-          noteStrategy: "append"
+          noteStrategy: "append",
+          workflowLevel: "L1",
+          workflowContractTrusted: true,
+          endpointId: getWorkflowEndpointId("L1"),
+          manualRepair: true,
+          taskIntent: "manual-rerun"
         });
       }
       await maybeOpenTaskPanelAfterQueue();
@@ -60590,7 +62592,99 @@ ${endpointDetails}`,
       }).show();
     }
   }
+  /** Scan the selected collection and recover only missing rating-driven workflow levels. */
+  async function handleCollectionRatedWorkflowRepair() {
+    if (!isWorkflowCoordinator()) {
+      showAIButlerToast("此操作仅在 P520 主协调器模式执行", "error");
+      return;
+    }
+    const collection = Zotero.getActiveZoteroPane().getSelectedCollection();
+    if (!collection) {
+      showAIButlerToast("请先选择一个分类", "error");
+      return;
+    }
+    try {
+      const scanner = AutoScanManager.getInstance();
+      const summary = { scanned: 0, unrated: 0, noPdf: 0, complete: 0, unknown: 0, unknownL1: 0, unknownL2: 0, unknownL3: 0, candidates: 0, l1: 0, l2: 0, l3: 0 };
+      const candidates = [];
+      for (const item of collection.getChildItems()) {
+        if (!scanner.shouldProcess(item)) continue;
+        summary.scanned += 1;
+        const rating = scanner.getItemRating(item);
+        if (rating < 1) {
+          summary.unrated += 1;
+          continue;
+        }
+        const states = {
+          L1: await scanner.getWorkflowLevelState(item, "L1"),
+          L2: rating >= 2 ? await scanner.getWorkflowLevelState(item, "L2") : null,
+          L3: rating >= 5 ? await scanner.getWorkflowLevelState(item, "L3") : null
+        };
+        const unknownLevels = Object.entries(states).filter(([, result]) => result?.state === WORKFLOW_ARTIFACT_UNKNOWN).map(([level]) => level);
+        if (unknownLevels.length) {
+          summary.unknown += 1;
+          for (const level of unknownLevels) summary[`unknown${level}`] += 1;
+          continue;
+        }
+        const needsL1 = states.L1.state === WORKFLOW_ARTIFACT_MISSING;
+        const needsL2 = states.L2?.state === WORKFLOW_ARTIFACT_MISSING;
+        const needsL3 = states.L3?.state === WORKFLOW_ARTIFACT_MISSING;
+        if (!needsL1 && !needsL2 && !needsL3) {
+          summary.complete += 1;
+          continue;
+        }
+        if (!await scanner.hasUsablePDFAttachment(item)) {
+          summary.noPdf += 1;
+          continue;
+        }
+        if (needsL1) summary.l1 += 1;
+        if (needsL2) summary.l2 += 1;
+        if (needsL3) summary.l3 += 1;
+        candidates.push({ item, rating, needsL1, needsL2, needsL3 });
+      }
+      summary.candidates = candidates.length;
+      if (!summary.candidates) {
+        new ztoolkit.ProgressWindow("AI Butler", { closeOnClick: true, closeTime: 5000 }).createLine({
+          text: `「${collection.name}」没有可自动补齐的已评分文献。已完整 ${summary.complete} 篇；待确认 ${summary.unknown} 篇（L1 ${summary.unknownL1}，L2 ${summary.unknownL2}，L3 ${summary.unknownL3}）；未评分 ${summary.unrated} 篇；无本地 PDF ${summary.noPdf} 篇。`,
+          type: "default"
+        }).show();
+        return;
+      }
+      const missingPrompts = [];
+      if (summary.l1 && !scanner.getAutoScanPrompt()) missingPrompts.push("L1：One Sentence");
+      if (summary.l2 && !scanner.getAutoL2Prompt()) missingPrompts.push("L2：Evidence Card");
+      if (summary.l3 && !scanner.getAutoL3Prompt()) missingPrompts.push("L3：Deep Reading");
+      if (missingPrompts.length) {
+        new ztoolkit.ProgressWindow("AI Butler", { closeOnClick: true, closeTime: 6000 }).createLine({
+          text: `无法补齐任务：请先在 AI Butler 的提示词设置中保存 ${missingPrompts.join("、")}`,
+          type: "error"
+        }).show();
+        return;
+      }
+      const confirmed = Services.prompt.confirm(
+        Zotero.getMainWindow(),
+        "扫描已评分文献并补齐流程",
+        `分类「${collection.name}」将只补齐确认缺失的流程：\n\n待处理 ${summary.candidates} 篇：L1 ${summary.l1}，L2 ${summary.l2}，L3 ${summary.l3}。\n已完整 ${summary.complete} 篇；待确认 ${summary.unknown} 篇（L1 ${summary.unknownL1}，L2 ${summary.unknownL2}，L3 ${summary.unknownL3}）不会自动入队；未评分 ${summary.unrated} 篇；无本地 PDF ${summary.noPdf} 篇将跳过。\n\n可识别的历史结果不会重跑；只有标签、读取失败或格式不明确的结果列为待确认。是否继续？`
+      );
+      if (!confirmed) return;
+      for (const candidate of candidates) {
+        await scanner.enqueueRatedWorkflow(candidate.item, { manualRepair: true });
+      }
+      await maybeOpenTaskPanelAfterQueue();
+      new ztoolkit.ProgressWindow("AI Butler", { closeOnClick: true, closeTime: 6000 }).createLine({
+        text: `已扫描 ${summary.scanned} 篇并安排补齐：L1 ${summary.l1}，L2 ${summary.l2}，L3 ${summary.l3}；待确认 ${summary.unknown} 篇未入队。`,
+        type: "success"
+      }).show();
+    } catch (error) {
+      ztoolkit.log("[AI-Butler] 已评分流程补齐扫描失败:", error);
+      new ztoolkit.ProgressWindow("AI Butler", { closeOnClick: true, closeTime: 6000 }).createLine({
+        text: `已评分流程补齐扫描失败: ${error.message || error}`,
+        type: "error"
+      }).show();
+    }
+  }
   async function onMainWindowUnload(win) {
+    AutoScanManager.getInstance().unbindStyleRatingClickFallback(win);
     try {
       const button = win.document.getElementById("ai-butler-library-toolbar-btn");
       if (button) {
@@ -60602,6 +62696,8 @@ ${endpointDetails}`,
     addon.data.dialog?.window?.close();
   }
   function onShutdown() {
+    AutoScanManager.getInstance().stop();
+    void TaskQueueManager.getInstance().dispose();
     unregisterLibraryStatusColumn();
     ztoolkit.unregisterAll();
     addon.data.dialog?.window?.close();
@@ -60869,10 +62965,14 @@ ${endpointDetails}`,
       init_package();
       init_prefs();
       init_llmEndpointManager();
+      ensureWorkflowEndpointConfiguration();
       init_prompts();
       UI_CUSTOMIZATION_CHANGED_EVENT = "ai-butler-ui-customization-changed";
       CONTEXT_MENU_DOM_IDS = {
         workflowPreset: "zotero-itemmenu-ai-butler-workflow-preset",
+        supplementL1DataAvailability: "zotero-itemmenu-ai-butler-supplement-l1-data",
+        repairManagedTags: "zotero-itemmenu-ai-butler-repair-managed-tags",
+        organizeWorkflowNotes: "zotero-itemmenu-ai-butler-organize-workflow-notes",
         generateSummary: "zotero-itemmenu-ai-butler-summary",
         multiRoundReanalyze: "zotero-itemmenu-ai-butler-multi-round",
         dashboard: "zotero-itemmenu-ai-butler-dashboard",
@@ -60881,6 +62981,9 @@ ${endpointDetails}`,
         mindmap: "zotero-itemmenu-ai-butler-mindmap",
         fillTable: "zotero-itemmenu-ai-butler-fill-table",
         collectionL1Summary: "zotero-collectionmenu-ai-butler-l1-summary",
+        collectionSupplementL1DataAvailability: "zotero-collectionmenu-ai-butler-supplement-l1-data",
+        collectionRepairManagedTags: "zotero-collectionmenu-ai-butler-repair-managed-tags",
+        collectionRatedWorkflowRepair: "zotero-collectionmenu-ai-butler-rated-workflow-repair",
         literatureReview: "zotero-collectionmenu-ai-butler-literature-review",
         clearCollectionAiNotes: "zotero-collectionmenu-ai-butler-clear-collection-ai-notes"
       };

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$ProfileDirectory,
-    [string]$ExpectedVersion = '3.8.5.3'
+    [string]$ExpectedVersion = '3.8.5.25'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -62,7 +62,13 @@ $markers = @(
     'noteStrategy: "append"',
     'prompt: options?.prompt',
     'abortedTaskRecoveryCount',
-    'Recovered aborted tasks from persisted queue'
+    'Recovered aborted tasks from persisted queue',
+    'readLlmForZoteroMineruCache',
+    'native-zip-fallback',
+    'direct-pdf-fallback',
+    'taskIntent: "manual-rerun"',
+    'workflowLlmCacheDiagnosticsByItem',
+    'Data:AvailableOnRequest'
 )
 $markerResults = foreach ($marker in $markers) {
     [pscustomobject]@{ Marker = $marker; Present = (Test-ArchiveMarker -XpiPath $liveXpi -Marker $marker) }

@@ -1,0 +1,8 @@
+{
+  "source": "frozen-xpi",
+  "xpi_filename": "zotero-ai-butler-3.8.5.2-pre-3.8.5.4-20260915-174000.xpi",
+  "xpi_sha256": "F907C0F81B7920264A7CCA198E99970BBCF943594CC54F7134FB43BDC79D7467",
+  "addon_id": "zotero-ai-butler@github.com",
+  "addon_version": "3.8.5.2",
+  "file_count": 95
+}

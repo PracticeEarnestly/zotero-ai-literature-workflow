@@ -20,10 +20,10 @@ MARKERS = (
     "pendingRatedL1Parents",
     "getItemRating(item)",
     r"extra.match(/(?:^|\r?\n)\s*rate\s*:\s*([1-5])\s*(?=\r?\n|$)/i)",
-    "enqueueL2IfRated(item)",
-    "enqueueL3IfRated(item)",
+    "async enqueueL2IfRated",
+    "async enqueueL3IfRated",
     "enqueueRatedWorkflow(item)",
-    "enqueueL1IfMissingForRating(item)",
+    "async enqueueL1IfMissingForRating",
     "scheduleQueuedTaskStart(taskQueue)",
     'workflowLevel: "L2"',
     'workflowLevel: "L3"',
@@ -31,7 +31,7 @@ MARKERS = (
     "getFirstAccessiblePDFAttachment(item)",
     "[AI-Butler] Resuming persisted pending tasks",
     'noteStrategy: "append"',
-    "prompt: options?.prompt",
+    "buildWorkflowRequestPrompt",
     "getWorkflowEndpointId(workflowLevel)",
     "ensureWorkflowEndpointConfiguration()",
     'workflowLevel: "L1"',
@@ -40,16 +40,19 @@ MARKERS = (
     "scanRecentRatedL2Items()",
     "recentRatingWindowMs",
     "bindStyleRatingClickFallback(win)",
-    "extractZoteroTags(content)",
+    "static extractZoteroTags",
     "applyZoteroTags(item, tags)",
-    "workflowTagOnly",
-    "if (!workflowTagOnly)",
-    "An unrelated AI note must not block L1",
-    "this.scheduleQueuedTaskStart(tqm);",
-    'workflowLevel === "L1" || workflowLevel === "L2" ? "Qwen"',
-    'workflowLevel === "L3" ? "OpenAI 兼容 (Chat Completions)"',
+    "filterWorkflowTopicTags",
+    "detectWorkflowLevelState",
+    "this.scheduleQueuedTaskStart(taskQueue);",
     "abortedTaskRecoveryCount",
     "Recovered aborted tasks from persisted queue",
+    "readLlmForZoteroMineruCache",
+    "native-zip-fallback",
+    "direct-pdf-fallback",
+    'taskIntent: "manual-rerun"',
+    "workflowLlmCacheDiagnosticsByItem",
+    "Data:AvailableOnRequest",
 )
 XPI_NAME = "zotero-ai-butler@github.com.xpi"
 
@@ -57,7 +60,7 @@ XPI_NAME = "zotero-ai-butler@github.com.xpi"
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile-dir", required=True, type=Path, help="Zotero profile directory")
-    parser.add_argument("--expected-version", default="3.8.5.3")
+    parser.add_argument("--expected-version", default="3.8.5.25")
     args = parser.parse_args()
 
     xpi_path = args.profile_dir / "extensions" / XPI_NAME

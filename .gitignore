@@ -9,6 +9,10 @@ zotero-ai-literature-deployment/source/
 *.zip
 *.pdf
 
+# Publish only the explicitly reviewed, credential-free release package
+!release/
+!release/zotero-ai-butler-3.8.5.25-public.xpi
+
 # Local development/build state
 **/node_modules/
 **/.cache/

@@ -32,9 +32,9 @@ L2 与 L3 都追加到已有 AI Note，不覆盖已有内容。成功完成后�
 | AI Butler | MinerU 解析、自动 L1、星级触发 L2/L3、队列、AI Note 与 Collection 批处理 |
 | MinerU | PDF 转为可供模型阅读的 Markdown；优先使用本地可访问 PDF |
 | llm-for-zotero | 人工发起的 L1/L2/L3 与 Agent Mode 科研用途标签管理 |
-| Qwen 27B | L1 与 L2 的固定模型 |
+| Qwen 27B | L1 默认模型；L2 的固定模型 |
 | Gemma 31B | L3 的固定模型；AI Butler 与 llm-for-zotero 共用 |
-| 本地 Gemma 12B | llm-for-zotero Agent Mode 与备用用途，不作为默认 L1 |
+| 本地 Gemma4 12B | 可在 AI Butler 的 Zotero 偏好设置中选为 L1；默认不启用该选择 |
 
 模型地址、密钥和局域网配置只保留在 Zotero 本地首选项，不写入本文件或 Git。
 
@@ -43,7 +43,7 @@ L2 与 L3 都追加到已有 AI Note，不覆盖已有内容。成功完成后�
 ### 3.1 L1：新增文献
 
 - 触发条件：新增父文献，且至少有一个本地路径可访问的 PDF。
-- 行为：自动运行 `L1：One Sentence`，使用 Qwen 27B。
+- 行为：自动运行 `L1：One Sentence`；默认使用 Qwen 27B，也可在 AI Butler 的 Zotero 偏好设置中切换为本地 LM Studio 的 Gemma4 12B。切换仅影响之后新建的 L1 任务。
 - Note 行为：已有 AI Note 时追加 L1 结果。
 - 标签：读取 L1 输出末尾的结构化 JSON，只追加允许前缀的标签；任务成功时确保写入 `AI:L1`。
 

@@ -1,4 +1,4 @@
-﻿<linkset>
+<linkset>
   <html:link rel="localization" href="aiButler-preferences.ftl" />
 </linkset>
 
@@ -27,5 +27,26 @@
         点击上方按钮打开管家主界面,在"设置"标签页中配置 API、提示词等所有选项。
       </description>
     </vbox>
+  </groupbox>
+
+  <groupbox>
+    <caption label="Literature Flow 设备角色" />
+    <description style="margin-bottom: 8px">
+      同一个 XPI 可配置主协调器、Linux 备用协调器、阅读设备或 Windows L1 应急机；设置只保存在本机 Zotero 配置中，不随文献库同步。
+    </description>
+    <hbox align="center">
+      <label value="本机模式：" control="zotero-prefpane-ai-butler-workflowDeviceRole" />
+      <menulist id="zotero-prefpane-ai-butler-workflowDeviceRole" width="430">
+        <menupopup>
+          <menuitem label="P520 主协调器：新增 L1；打星 L2/L3；全部本机 Qwen" value="coordinator-qwen" />
+          <menuitem label="Linux 备用协调器：待命；切为主协调器后全部本机 Qwen" value="standby-qwen" />
+          <menuitem label="阅读设备：仅阅读和打星；不自动运行" value="reader-standby" />
+          <menuitem label="Windows L1 应急机：新增文献仅本机 Gemma4 L1" value="emergency-gemma-l1" />
+        </menupopup>
+      </menulist>
+    </hbox>
+    <description style="margin-top: 8px; color: #666">
+      同一时间只允许一台“主协调器”自动运行。所有评分通过 Zotero 同步；主协调器只补缺失层级。Windows 应急机不响应评分，也不运行 L2/L3。
+    </description>
   </groupbox>
 </vbox>
