@@ -26,3 +26,13 @@ This version reuses synchronized `llm-for-zotero` MinerU ZIP caches before parsi
 The streamlined implementation is intentionally maintained as a separate public project: [PracticeEarnestly/zotero-literature-flow](https://github.com/PracticeEarnestly/zotero-literature-flow). Its current release is [v0.2.1](https://github.com/PracticeEarnestly/zotero-literature-flow/releases/tag/v0.2.1), which provides the installable XPI, `update.json`, and a complete source archive.
 
 This repository remains the deployment and AI Butler patch repository. It does not duplicate the Literature Flow source. See [Literature Flow integration](zotero-ai-literature-deployment/LITERATURE_FLOW_INTEGRATION.md) for the responsibility and version map.
+
+## Zotero LLM Automation Bridge 0.1.5
+
+A separate plugin queues a paper when its Style Extra rating enters five stars, calls the public llm-for-zotero Agent API, and saves a child note. It does not modify Style, llm-for-zotero, or AI Butler. Version 0.1.5 renders Markdown as Zotero rich text and migrates Bridge-owned legacy notes after backing them up.
+
+- [Plugin source and setup](zotero-llm-automation-bridge/README.md)
+- [Installable XPI and checksum](https://github.com/PracticeEarnestly/zotero-ai-literature-workflow/releases/tag/bridge-v0.1.5)
+- [Validation and compatibility limits](zotero-llm-automation-bridge/docs/VALIDATION.md)
+
+The Bridge is independent of the L1–L3 workflow above. Its queue is local to one device. Configure llm-for-zotero and review the Bridge settings before rating papers. Updates are installed manually.

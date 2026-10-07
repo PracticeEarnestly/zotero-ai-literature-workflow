@@ -1,0 +1,15 @@
+{
+  "manifest_version": 2,
+  "name": "Zotero LLM Automation Bridge",
+  "version": "0.1.5",
+  "description": "Entering five stars queues a Figure and Table review through the llm-for-zotero public Agent API.",
+  "author": "Xiqing",
+  "applications": {
+    "zotero": {
+      "id": "llm-automation-bridge@xiqing.local",
+      "strict_min_version": "7.0",
+      "strict_max_version": "9.0.*",
+      "update_url": "https://example.invalid/zotero-llm-automation-bridge/updates.json"
+    }
+  }
+}

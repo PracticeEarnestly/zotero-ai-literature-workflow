@@ -1,0 +1,32 @@
+<vbox xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+      xmlns:html="http://www.w3.org/1999/xhtml" onload="LLMBridgePreferences.init(window)">
+  <groupbox>
+    <html:h2>Zotero LLM Automation Bridge</html:h2>
+    <html:p id="llm-bridge-status"/>
+    <html:label><html:input id="llm-bridge-enabled" type="checkbox"/> 启用自动化</html:label>
+    <html:p>仅在 Extra 的 rate 从低于 5 变为 5 时入队。启动时已有五星不运行。新导入的五星条目只建立基线。同步评分的变化也可能触发；建议只在一台电脑启用。</html:p>
+    <html:label><html:input id="llm-bridge-rerun" type="checkbox"/> 降星后再次升至五星时重新分析</html:label>
+  </groupbox>
+  <groupbox>
+    <html:h3>Figure + Table Deep Review</html:h3>
+    <html:label for="llm-bridge-model">llm-for-zotero API 模型（需支持工具调用和视觉输入）</html:label>
+    <html:select id="llm-bridge-model"/>
+    <html:p id="llm-bridge-version"/>
+    <html:textarea id="llm-bridge-prompt" rows="18" style="width: 100%; box-sizing: border-box;"/>
+    <html:p>修改 Prompt 后版本号自动增加；已排队任务使用入队时的 Prompt。Agent 返回正文，由 Bridge 保存笔记。</html:p>
+  </groupbox>
+  <groupbox>
+    <html:h3>结果</html:h3>
+    <html:label for="llm-bridge-noteTitle">子笔记标题</html:label>
+    <html:input id="llm-bridge-noteTitle" type="text" style="width: 100%;"/>
+    <html:label><html:input id="llm-bridge-replace" type="checkbox"/> 更新 Bridge 自己生成的上一份结果（取消则保留历史版本）</html:label>
+    <html:p>其他插件的笔记、标签、评分不会由 Bridge 修改。</html:p>
+    <html:button id="llm-bridge-save">保存设置</html:button>
+    <html:p id="llm-bridge-feedback"/>
+  </groupbox>
+  <groupbox>
+    <html:h3>任务队列</html:h3>
+    <html:button id="llm-bridge-refresh">刷新状态</html:button>
+    <html:div id="llm-bridge-jobs"/>
+  </groupbox>
+</vbox>

@@ -1,0 +1,7 @@
+dist/
+__pycache__/
+node_modules/
+# Private, machine-specific installation and verification helpers
+scripts/local-mcp.py
+scripts/runtime-probe.js
+scripts/stage-install.py
