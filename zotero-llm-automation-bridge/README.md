@@ -1,4 +1,4 @@
-# Zotero LLM Automation Bridge 0.1.5
+# Zotero LLM Automation Bridge 0.1.6
 
 一个独立的 Zotero 插件。Style 的 Extra 评分从低于 5 变为 5 时，它把论文加入串行队列，通过 llm-for-zotero 的公开 Agent API 分析图表，再保存论文子笔记。
 
@@ -6,7 +6,7 @@
 
 ## 安装与首次使用
 
-1. 在 Zotero 的“工具 → 插件”中选择“从文件安装插件”，打开 [Release 中的 XPI](https://github.com/PracticeEarnestly/zotero-ai-literature-workflow/releases/tag/bridge-v0.1.5)。已在 Windows Zotero 9.0.6 注册并加载；真实验证见下方记录。
+1. 在 Zotero 的“工具 → 插件”中选择“从文件安装插件”，打开 [Release 中的 XPI](https://github.com/PracticeEarnestly/zotero-ai-literature-workflow/releases/tag/bridge-v0.1.6)。已在 Windows Zotero 10.0.6 注册并加载；真实验证见下方记录。
 2. 确认 Style 使用 Extra 评分模式，llm-for-zotero 使用原生 Agent 对话系统。
 3. 在 Zotero 设置中的 **LLM Automation Bridge** 面板选择已配置的 API 模型。模型必须支持工具调用和图像输入。
 4. 检查 Prompt 和保存选项。默认启用自动化，但启动时已有五星只建立基线。新加入或导入的五星也只建立基线。
@@ -23,14 +23,16 @@ Bridge 不保存新的模型密钥。它在执行时只读 llm-for-zotero 已配
 - 使用公开 Gateway 解析明确的父条目、文库和 PDF 附件。无需打开 llm-for-zotero 侧栏或选中目标论文。
 - 模型不支持工具调用或视觉输入时不调用模型。不把没有成功图像读取记录的回答保存成完成的视觉精读。
 - Prompt 内置“顺序解读”独立模板，保留其 Results 证据顺序、逐 panel 解析和证据审查要求。前面加了工具调用和 Bridge 保存说明。安装后可在 Bridge 设置中修改。
+- 设置面板读取 llm-for-zotero 当前的 API 模型和自定义 Prompt。可选择一个自定义 Prompt 并载入 Bridge；保存后形成独立副本和新版本，不会反向修改 llm-for-zotero，也不会在上游变化时静默覆盖 Bridge 配置。
 - 设置里可编辑 Prompt。正文变化后版本号自动增加。每个任务保存入队时的 Prompt、版本和保存方式。
 - 默认更新 Bridge 自己生成的上一份笔记；可取消此选项保留历史版本。标题相同的普通笔记不会被覆盖。
 - 先保存分析正文，再写笔记。笔记写入失败后重试不会再次调用模型。同一 job 的笔记标记用于处理笔记已写入、状态尚未落盘的中断。
 - Agent 请求额外确认时明确拒绝，任务失败，不自动授予写入或系统命令权限。
 - 后端缺失或初始化时保留 `WAITING_LLM`，每 10 秒检查。失败任务没有自动模型重试；可在面板手动重试。手动重试采用当前保存的模型选择，保留原任务的 Prompt。
+- 设置面板用表格显示最近 30 个任务，包括状态、文献、评分变化、Prompt 版本、模型、尝试次数、更新时间和详情。失败或等待后端的任务可直接在表格中重试。
 - 禁用或卸载时移除监听器、清理定时器、取消运行。Prompt 和队列文件保留。
 
-0.1.5 会自动迁移完成任务所关联的旧版纯文本笔记。迁移前将原始 HTML 和 Markdown 备份到 `llm-automation-bridge/markdown-backups/`，保留笔记 ID、任务记录和生成信息，不调用模型。已经转换的笔记和其他插件/人工笔记不会再次转换。
+0.1.5 起会自动迁移完成任务所关联的旧版纯文本笔记。迁移前将原始 HTML 和 Markdown 备份到 `llm-automation-bridge/markdown-backups/`，保留笔记 ID、任务记录和生成信息，不调用模型。已经转换的笔记和其他插件/人工笔记不会再次转换。
 
 ## 本地文件
 
@@ -52,6 +54,7 @@ Bridge 不保存新的模型密钥。它在执行时只读 llm-for-zotero 已配
 - 子笔记将 Markdown 标题、加粗、列表、表格、代码块和链接转换为富文本，公式使用 Zotero 原生 math 标记。原始 HTML 作为文字保留，图像不会由 Bridge 再复制或联网加载。
 - 很长的全文和完整 Prompt 可能达到所选模型或 Agent 的上下文、输出或轮数上限。未正常结束时不写成完成笔记，失败运行可在 llm-for-zotero 记录中检查。
 - 不提供“扫描所有已有五星并批量运行”功能。
+- 清单支持 Zotero 7.0–10.0；真实宿主验证覆盖 Windows Zotero 9.0.6 和 10.0.6。
 
 ## 构建与测试
 

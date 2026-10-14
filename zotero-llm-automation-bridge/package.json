@@ -1,6 +1,6 @@
 {
   "name": "zotero-llm-automation-bridge",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "Independent five-star automation bridge for llm-for-zotero",
   "scripts": {

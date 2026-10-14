@@ -37,6 +37,24 @@ test('missing/not initialized API yields WAITING_LLM rather than a lost task', (
   z.LLMForZotero = { api: { agent: { runTurn() {}, getZoteroGateway() { throw Error('not initialized'); } } } };
   assert.throws(() => adapter.api(), b.WaitingLLM);
 });
+test('reads llm-for-zotero custom prompts without changing upstream preferences', () => {
+  const { adapter, prefs, b } = setup();
+  const key = 'extensions.zotero.llmforzotero.customShortcuts';
+  const original = JSON.stringify([
+    { id: 'custom-1', label: '顺序解读', prompt: 'Read every figure.' },
+    { id: '', label: 'invalid', prompt: 'ignored' },
+    { id: 'custom-2', label: '', prompt: '  Another prompt.  ' },
+  ]);
+  prefs.set(key, original);
+  assert.equal(JSON.stringify(adapter.customPrompts().map(row => ({ id: row.id, label: row.label, prompt: row.prompt }))), JSON.stringify([
+    { id: 'custom-1', label: '顺序解读', prompt: 'Read every figure.' },
+    { id: 'custom-2', label: 'Custom Shortcut', prompt: 'Another prompt.' },
+  ]));
+  const imported = b.composeImportedPrompt(adapter.customPrompts()[0].prompt);
+  assert.match(imported, /paper_read/); assert.ok(imported.endsWith('Read every figure.'));
+  assert.equal(prefs.get(key), original);
+  prefs.set(key, '{bad json'); assert.equal(adapter.customPrompts().length, 0);
+});
 test('tool-less or text-only model is rejected before a model run', async () => {
   for (const cap of [{ toolCalls: false, multimodal: true }, { toolCalls: true, contentInputs: { images: false } }]) {
     const { adapter, calls } = setup({ getCapabilities: () => cap });

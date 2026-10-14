@@ -16,11 +16,13 @@ Bridge.TriggerEngine = class {
     if (!cfg.rerun && prior.some(job => job.status === "COMPLETED")) return false;
     // Each actual crossing gets a job, including a crossing during a running job.
     // Repeated modify events at rating 5 do not create jobs.
+    const createdAt = new Date().toISOString();
     this.state.jobs.push({ id: this.makeId(), itemKey: key, libraryID: item.libraryID, key: item.key,
       title: item.getField("title"), workflow: "figure-table-deep-review", triggerRating: 5,
+      previousRating: old,
       prompt: cfg.prompt, promptVersion: cfg.promptVersion, modelEntryId: cfg.modelEntryId,
       noteTitle: cfg.noteTitle, replace: cfg.replace, conversationKey: this.state.nextConversation++,
-      status: "QUEUED", createdAt: new Date().toISOString(), attempts: 0 });
+      status: "QUEUED", createdAt, updatedAt: createdAt, attempts: 0 });
     return true;
   }
 };

@@ -1,5 +1,6 @@
 <vbox xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
-      xmlns:html="http://www.w3.org/1999/xhtml" onload="LLMBridgePreferences.init(window)">
+      xmlns:html="http://www.w3.org/1999/xhtml"
+      onload="Zotero.LLMAutomationBridge.initPreferences(this.ownerDocument.defaultView)">
   <groupbox>
     <html:h2>Zotero LLM Automation Bridge</html:h2>
     <html:p id="llm-bridge-status"/>
@@ -11,9 +12,15 @@
     <html:h3>Figure + Table Deep Review</html:h3>
     <html:label for="llm-bridge-model">llm-for-zotero API 模型（需支持工具调用和视觉输入）</html:label>
     <html:select id="llm-bridge-model"/>
+    <html:button id="llm-bridge-refreshModels">刷新模型和 Prompt 列表</html:button>
+    <html:p id="llm-bridge-modelStatus"/>
+    <html:label for="llm-bridge-promptSource">从 llm-for-zotero 导入自定义 Prompt</html:label>
+    <html:select id="llm-bridge-promptSource"/>
+    <html:button id="llm-bridge-importPrompt">载入所选 Prompt</html:button>
+    <html:p id="llm-bridge-promptSourceStatus"/>
     <html:p id="llm-bridge-version"/>
     <html:textarea id="llm-bridge-prompt" rows="18" style="width: 100%; box-sizing: border-box;"/>
-    <html:p>修改 Prompt 后版本号自动增加；已排队任务使用入队时的 Prompt。Agent 返回正文，由 Bridge 保存笔记。</html:p>
+    <html:p>导入会复制当前 Prompt，并加上 Bridge 的安全与读图说明；不会修改 llm-for-zotero。修改 Prompt 后版本号自动增加；已排队任务使用入队时的 Prompt。</html:p>
   </groupbox>
   <groupbox>
     <html:h3>结果</html:h3>
@@ -27,6 +34,24 @@
   <groupbox>
     <html:h3>任务队列</html:h3>
     <html:button id="llm-bridge-refresh">刷新状态</html:button>
-    <html:div id="llm-bridge-jobs"/>
+    <html:p id="llm-bridge-jobsSummary"/>
+    <html:div style="max-height: 360px; overflow: auto; border: 1px solid rgba(127, 127, 127, 0.35);">
+      <html:table style="width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 0.92em;">
+        <html:thead>
+          <html:tr>
+            <html:th style="width: 9%; text-align: left; padding: 6px;">状态</html:th>
+            <html:th style="width: 20%; text-align: left; padding: 6px;">文献</html:th>
+            <html:th style="width: 8%; text-align: left; padding: 6px;">评分</html:th>
+            <html:th style="width: 9%; text-align: left; padding: 6px;">Prompt</html:th>
+            <html:th style="width: 15%; text-align: left; padding: 6px;">模型</html:th>
+            <html:th style="width: 7%; text-align: left; padding: 6px;">尝试</html:th>
+            <html:th style="width: 15%; text-align: left; padding: 6px;">更新时间</html:th>
+            <html:th style="width: 17%; text-align: left; padding: 6px;">详情</html:th>
+          </html:tr>
+        </html:thead>
+        <html:tbody id="llm-bridge-jobsBody"/>
+      </html:table>
+    </html:div>
+    <html:p>最多显示最近 30 个任务。失败或等待后端的任务可在“详情”列手动重试。</html:p>
   </groupbox>
 </vbox>

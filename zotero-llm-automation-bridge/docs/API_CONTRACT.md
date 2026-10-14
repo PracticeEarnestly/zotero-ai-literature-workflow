@@ -1,6 +1,6 @@
 # 核对的接口与兼容范围
 
-核对日期：2026-10-07。本机只读检查：llm-for-zotero **3.9.10**，Ethereal Style **6.0.86**。
+核对日期：2026-10-15。本机只读检查：Zotero **10.0.6**，llm-for-zotero **3.9.11**，Ethereal Style **6.0.91**。
 
 另外核对了 llm-for-zotero 主分支提交 `52c1604e178012f62db6529c63ec9178ac0cf4e8`。参考源码放在临时目录，未写入现有插件。
 
@@ -40,10 +40,13 @@ Style 6.0.86 已支持 `tag` 评分存储。因此“Style 总是把评分放在
 extensions.zotero.llmforzotero.modelProviderGroups
 extensions.zotero.llmforzotero.lastUsedModelEntryId
 extensions.zotero.llmforzotero.conversationSystem
+extensions.zotero.llmforzotero.customShortcuts
 extensions.zotero.zoterostyle.ratingColumn.storage
 ```
 
-这意味着依赖面比最初提出的两个接口稍大。未来上游若提供公开模型配置接口，应优先替换此处的偏好读取。未知配置、外部运行时或缺失模型不会自动选择替代后端。
+`customShortcuts` 只用于列出并显式导入用户已有的自定义 Prompt。导入是单向复制：用户仍需点击“保存设置”，Bridge 才建立自己的新版本；上游 Prompt 后续变化不会静默覆盖 Bridge，也不会发生反向写入。
+
+这意味着依赖面比最初提出的两个接口稍大。未来上游若提供公开模型或 Prompt 配置接口，应优先替换此处的偏好读取。未知配置、外部运行时或缺失模型不会自动选择替代后端。
 
 ## 上游来源
 

@@ -34,8 +34,7 @@ Bridge.startup = async rootURI => {
   Bridge.installWatcher();
   await Bridge.save();
   Bridge.paneID = Zotero.PreferencePanes.register({ pluginID: "llm-automation-bridge@xiqing.local",
-    id: "llm-automation-bridge", label: "LLM Automation Bridge", src: "chrome://llm-automation-bridge/content/preferences.xhtml",
-    scripts: ["chrome://llm-automation-bridge/content/preferences.js"] });
+    id: "llm-automation-bridge", label: "LLM Automation Bridge", src: "chrome://llm-automation-bridge/content/preferences.xhtml" });
   Bridge.schedule();
   Bridge.kick();
 };

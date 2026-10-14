@@ -19,6 +19,16 @@ Bridge.LLMAdapter = class {
       .filter(row => row.id && typeof row.model === "string" && row.model.trim())
       .map(row => ({ id: row.id, model: row.model.trim(), group, row })));
   }
+  customPrompts() {
+    const raw = this.zotero.Prefs.get("extensions.zotero.llmforzotero.customShortcuts", true);
+    let rows;
+    try { rows = JSON.parse(raw || "[]"); } catch (_) { return []; }
+    if (!Array.isArray(rows)) return [];
+    return rows.filter(row => row && typeof row.id === "string" && row.id.trim()
+        && typeof row.prompt === "string" && row.prompt.trim())
+      .map(row => ({ id: row.id.trim(), label: typeof row.label === "string" && row.label.trim()
+        ? row.label.trim() : "Custom Shortcut", prompt: row.prompt.trim() }));
+  }
   model(id) {
     const last = this.zotero.Prefs.get("extensions.zotero.llmforzotero.lastUsedModelEntryId", true);
     const entries = this.models();

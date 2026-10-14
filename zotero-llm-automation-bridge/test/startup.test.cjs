@@ -24,6 +24,8 @@ test('full startup with absent LLM baselines existing five stars, registers pane
   const env = startupFixture(), { b, p, callbacks, files, timers } = env;
   await b.startup('test:/'); await b.work; assert.equal(b.state.jobs.length, 0);
   assert.match(callbacks.get('prefs').src, /^chrome:\/\/llm-automation-bridge/);
+  assert.equal(callbacks.get('prefs').scripts, undefined);
+  assert.equal(typeof b.initPreferences, 'function');
   p.rating = 4; callbacks.get('notifier').notify('modify', 'item', [12]);
   p.rating = 5; callbacks.get('notifier').notify('modify', 'item', [12]);
   await b.store.tail; await Promise.resolve(); await b.work;
@@ -45,6 +47,33 @@ test('saving a changed prompt increases version without editing upstream prefere
   assert.equal(b.config.promptVersion, 2);
   assert.equal([...prefs.keys()].some(key => key.startsWith('extensions.zotero.llmforzotero.')), false);
   assert.equal(JSON.parse(files.get(b.configPath)).prompt, values.prompt); await b.shutdown();
+});
+test('preferences pane initializes models and prompt, then imports an upstream custom prompt', async () => {
+  const { b, z, prefs } = startupFixture(); await b.startup('test:/'); await b.work;
+  z.LLMAutomationBridge = b;
+  prefs.set('extensions.zotero.llmforzotero.modelProviderGroups', JSON.stringify([{ id: 'p', apiBase: 'https://example.invalid',
+    authMode: 'api_key', models: [{ id: 'm', model: 'vision-model' }] }]));
+  prefs.set('extensions.zotero.llmforzotero.customShortcuts', JSON.stringify([
+    { id: 'custom-1', label: '顺序解读', prompt: 'Current upstream prompt' },
+  ]));
+  const makeElement = () => ({ value: '', textContent: '', checked: false, disabled: false, children: [], style: '',
+    replaceChildren() { this.children = []; }, appendChild(child) { this.children.push(child); },
+    addEventListener(type, fn) { this['on' + type] = fn; } });
+  const ids = ['status', 'enabled', 'rerun', 'replace', 'prompt', 'noteTitle', 'model', 'modelStatus',
+    'promptSource', 'promptSourceStatus', 'version', 'jobsSummary', 'jobsBody', 'refreshModels', 'importPrompt', 'feedback', 'refresh', 'save'];
+  const elements = Object.fromEntries(ids.map(id => [id, makeElement()]));
+  const document = { getElementById: id => elements[id.replace('llm-bridge-', '')], createElementNS: () => makeElement() };
+  b.initPreferences({ document });
+  assert.equal(elements.prompt.value, b.config.prompt); assert.ok(elements.prompt.value.length > 0);
+  assert.equal(elements.model.children.length, 2); assert.equal(elements.model.disabled, false);
+  assert.match(elements.modelStatus.textContent, /1 个/);
+  assert.equal(elements.promptSource.value, 'custom-1'); assert.equal(elements.promptSource.children.length, 2);
+  assert.equal(elements.jobsBody.children.length, 1);
+  assert.equal(elements.jobsBody.children[0].children[0].textContent, '暂无任务');
+  elements.importPrompt.onclick();
+  assert.ok(elements.prompt.value.startsWith(b.promptPreamble));
+  assert.ok(elements.prompt.value.endsWith('Current upstream prompt'));
+  assert.match(elements.feedback.textContent, /保存设置/); await b.shutdown();
 });
 test('bootstrap works in a Gecko-style scope without Cc/Ci aliases or global AbortController', async () => {
   const calls = [], z = {};
