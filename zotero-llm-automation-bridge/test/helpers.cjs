@@ -15,6 +15,7 @@ function load(extra = {}) {
 function paper(rating = 4, options = {}) {
   return { id: 12, libraryID: 1, key: 'ABCD1234', rating, deleted: false,
     isRegularItem: () => true, getField(name) { return name === 'extra' ? `rate: ${this.rating}` : 'A paper'; },
+    getNotes: () => [],
     getBestAttachment: async () => ({ id: 13, isPDFAttachment: () => true }), ...options };
 }
 function state() { return { schema: 1, ratings: {}, jobs: [], nextConversation: 8000000000000 }; }

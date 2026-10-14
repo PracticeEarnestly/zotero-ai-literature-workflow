@@ -46,6 +46,8 @@ extensions.zotero.zoterostyle.ratingColumn.storage
 
 `customShortcuts` 只用于列出并显式导入用户已有的自定义 Prompt。导入是单向复制：用户仍需点击“保存设置”，Bridge 才建立自己的新版本；上游 Prompt 后续变化不会静默覆盖 Bridge，也不会发生反向写入。
 
+现有五星补录先核对本机 `state.json` 中是否存在同一 `libraryID:itemKey` 的任意任务，再读取该条目的子笔记，检查 `data-llm-automation-bridge="figure-table-deep-review"` 标记。任何任务状态或已有 Bridge 笔记都视为已有自动化历史。Bridge 不用标题推断归属，也不修改用于去重的笔记。
+
 这意味着依赖面比最初提出的两个接口稍大。未来上游若提供公开模型或 Prompt 配置接口，应优先替换此处的偏好读取。未知配置、外部运行时或缺失模型不会自动选择替代后端。
 
 ## 上游来源

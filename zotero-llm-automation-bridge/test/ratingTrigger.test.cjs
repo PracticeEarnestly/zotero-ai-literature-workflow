@@ -1,9 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { load, paper, state } = require('./helpers.cjs');
-test('startup establishes a baseline and never queues existing five-star papers', () => {
+test('baseline is side-effect free; explicit existing-five-star scan queues once', () => {
   const { b } = load(), s = state(), engine = new b.TriggerEngine(s, b.settings);
   engine.baseline([paper(5)]); engine.observe(paper(5)); assert.equal(s.jobs.length, 0);
+  assert.equal(engine.enqueueExisting(paper(5)), true);
+  assert.equal(engine.enqueueExisting(paper(5)), false);
+  assert.equal(s.jobs[0].triggerSource, 'existing-five-star');
 });
 test('4→5 queues once despite metadata and note notifications; 5→4→5 reruns', () => {
   const { b } = load(), s = state(), p = paper(), engine = new b.TriggerEngine(s, b.settings);

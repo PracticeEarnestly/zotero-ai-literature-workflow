@@ -12,7 +12,8 @@ function startupFixture(initial = state()) {
     setTimeout: fn => { timers.set(++timerID, fn); return timerID; }, clearTimeout: id => timers.delete(id) });
   z.initializationPromise = Promise.resolve(); z.DataDirectory = { dir: '/zotero-test' };
   z.Libraries = { getAll: () => [{ libraryID: 1, editable: true }, { libraryID: 2, editable: false }] };
-  const p = paper(5); z.Items = { getAll: async () => [p], get: () => p, getByLibraryAndKeyAsync: async () => p };
+  const p = paper(5); z.Items = { getAll: async () => [p], get: () => p, getAsync: async () => [],
+    getByLibraryAndKeyAsync: async () => p };
   z.Notifier = { registerObserver: observer => { callbacks.set('notifier', observer); return 'observer-1'; },
     unregisterObserver: () => callbacks.delete('notifier') };
   z.PreferencePanes = { register: options => { callbacks.set('prefs', options); return options.id; } };
@@ -22,6 +23,7 @@ function startupFixture(initial = state()) {
 }
 test('full startup with absent LLM baselines existing five stars, registers pane; crossing queues and survives shutdown', async () => {
   const env = startupFixture(), { b, p, callbacks, files, timers } = env;
+  p.rating = 4;
   await b.startup('test:/'); await b.work; assert.equal(b.state.jobs.length, 0);
   assert.match(callbacks.get('prefs').src, /^chrome:\/\/llm-automation-bridge/);
   assert.equal(callbacks.get('prefs').scripts, undefined);
@@ -33,6 +35,20 @@ test('full startup with absent LLM baselines existing five stars, registers pane
   await b.shutdown(); assert.equal(timers.size, 0); assert.equal(callbacks.has('notifier'), false);
   const saved = JSON.parse(files.get('/zotero-test/llm-automation-bridge/state.json'));
   assert.equal(saved.jobs[0].status, 'WAITING_LLM');
+});
+test('startup queues current five-star papers once, but skips task and synced-note history', async () => {
+  const env = startupFixture(), { b, z, p } = env;
+  await b.startup('test:/'); await b.work;
+  assert.equal(b.state.jobs.length, 1); assert.equal(b.state.jobs[0].status, 'WAITING_LLM');
+  assert.equal(b.state.jobs[0].triggerSource, 'existing-five-star');
+  let result = await b.scanExistingFiveStars([p]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), { fiveStar: 1, existingJob: 1, existingNote: 0, added: 0 });
+  b.state.jobs = []; p.getNotes = () => [90];
+  z.Items.getAsync = async () => [{ id: 90, deleted: false, libraryID: 1, parentID: 12,
+    getNote: () => '<div data-llm-automation-bridge="figure-table-deep-review">done</div>' }];
+  result = await b.scanExistingFiveStars([p]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), { fiveStar: 1, existingJob: 0, existingNote: 1, added: 0 });
+  await b.shutdown();
 });
 test('restart baselines offline score changes; retained queued tasks wait for backend', async () => {
   const s = state(); s.ratings['1:ABCD1234'] = 4; s.jobs.push(job());
@@ -49,7 +65,7 @@ test('saving a changed prompt increases version without editing upstream prefere
   assert.equal(JSON.parse(files.get(b.configPath)).prompt, values.prompt); await b.shutdown();
 });
 test('preferences pane initializes models and prompt, then imports an upstream custom prompt', async () => {
-  const { b, z, prefs } = startupFixture(); await b.startup('test:/'); await b.work;
+  const { b, z, prefs, p } = startupFixture(); p.rating = 4; await b.startup('test:/'); await b.work;
   z.LLMAutomationBridge = b;
   prefs.set('extensions.zotero.llmforzotero.modelProviderGroups', JSON.stringify([{ id: 'p', apiBase: 'https://example.invalid',
     authMode: 'api_key', models: [{ id: 'm', model: 'vision-model' }] }]));
@@ -60,7 +76,7 @@ test('preferences pane initializes models and prompt, then imports an upstream c
     replaceChildren() { this.children = []; }, appendChild(child) { this.children.push(child); },
     addEventListener(type, fn) { this['on' + type] = fn; } });
   const ids = ['status', 'enabled', 'rerun', 'replace', 'prompt', 'noteTitle', 'model', 'modelStatus',
-    'promptSource', 'promptSourceStatus', 'version', 'jobsSummary', 'jobsBody', 'refreshModels', 'importPrompt', 'feedback', 'refresh', 'save'];
+    'promptSource', 'promptSourceStatus', 'version', 'jobsSummary', 'jobsBody', 'refreshModels', 'importPrompt', 'feedback', 'refresh', 'scanExisting', 'save'];
   const elements = Object.fromEntries(ids.map(id => [id, makeElement()]));
   const document = { getElementById: id => elements[id.replace('llm-bridge-', '')], createElementNS: () => makeElement() };
   b.initPreferences({ document });

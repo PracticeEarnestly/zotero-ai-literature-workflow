@@ -1,13 +1,19 @@
 Bridge.escapeHTML = value => String(value).replace(/[&<>"']/g, char => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
 })[char]);
+Bridge.reviewNoteMarker = 'data-llm-automation-bridge="figure-table-deep-review"';
+Bridge.hasReviewNote = async (zotero, item) => {
+  const notes = await zotero.Items.getAsync(item.getNotes());
+  return notes.some(note => !note.deleted && note.libraryID === item.libraryID && note.parentID === item.id
+    && note.getNote().includes(Bridge.reviewNoteMarker));
+};
 Bridge.NoteWriter = class {
   constructor(zotero) { this.zotero = zotero; }
   async write(item, job) {
     const z = this.zotero;
     const library = z.Libraries.get(item.libraryID);
     if (!library?.editable || item.deleted) throw new Bridge.WorkflowError("论文已删除或文库不可写");
-    const ownMarker = 'data-llm-automation-bridge="figure-table-deep-review"';
+    const ownMarker = Bridge.reviewNoteMarker;
     const jobMarker = `data-bridge-job="${Bridge.escapeHTML(job.id)}"`;
     let result;
     await z.DB.executeTransaction(async () => {

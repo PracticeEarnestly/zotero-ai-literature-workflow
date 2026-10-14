@@ -81,7 +81,7 @@ Bridge.initPreferences = win => {
       const row = doc.createElementNS("http://www.w3.org/1999/xhtml", "tr");
       cell(row, statusLabel[job.status] || job.status);
       const title = cell(row, job.title || job.itemKey); title.title = job.itemKey;
-      cell(row, `${job.previousRating ?? "< 5"} → ${job.triggerRating ?? 5}`);
+      cell(row, job.triggerSource === "existing-five-star" ? "现有 5" : `${job.previousRating ?? "< 5"} → ${job.triggerRating ?? 5}`);
       cell(row, `v${job.promptVersion ?? "?"}`);
       cell(row, job.model || job.modelEntryId || "最近选择");
       cell(row, String(job.attempts || 0));
@@ -110,6 +110,15 @@ Bridge.initPreferences = win => {
     el("feedback").textContent = `已载入“${source.label}”；点击“保存设置”后生效`;
   };
   el("refresh").onclick = render;
+  el("scanExisting").onclick = async () => {
+    el("scanExisting").disabled = true;
+    try {
+      const result = await bridge.scanExistingFiveStars();
+      el("feedback").textContent = `扫描 ${result.fiveStar} 篇五星论文；新增 ${result.added} 个任务，已有任务 ${result.existingJob} 篇，已有 Bridge 笔记 ${result.existingNote} 篇`;
+      render(); bridge.kick();
+    } catch (error) { el("feedback").textContent = bridge.safeError(error); }
+    finally { el("scanExisting").disabled = false; }
+  };
   el("save").onclick = async () => {
     el("save").disabled = true;
     try {
