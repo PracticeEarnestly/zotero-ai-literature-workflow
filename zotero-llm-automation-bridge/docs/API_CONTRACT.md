@@ -18,6 +18,8 @@ await api.getRunTrace(runId);
 
 `request` 至少包括 `mode: 'agent'`、`conversationKey`、`userText`、`item`、`libraryID`、`activeItemId`、`activePaperContext`、`fullTextPaperContexts` 和模型配置。`pdfPaperContexts` 专用于直接上传原始 PDF，必须与 `localDocuments` 逐一绑定。Bridge 不上传原始 PDF，而通过显式论文上下文调用 `paper_read`；因此使用 `activePaperContext` 与 `fullTextPaperContexts`。这个差异已在真实 Zotero 调用中核对。
 
+Bridge 会在 `userText` 前附加固定的工具兼容约束。`paper_read(mode: 'figures')` 只使用当前论文上下文与完整主图标签，不传 `attachmentId`、`name` 或 `filePath`；没有裁图时再使用现有 MinerU 图像或 `visual` 模式。用户保存的 Prompt 本身不会被改写。
+
 Bridge 给每个运行分配独立的大整数 conversationKey，并保存计数；不复用论文侧栏的会话。
 
 结果形状是 `{ kind: 'completed', runId, text }`，但失败终止也可能返回这个形状。因此还要核对 `getRunTrace(runId).run?.status`，或本轮 `agent_run_stop` 事件的 `payload.status` 为 `completed`，不能只查 `kind`。独立 conversationKey 在本机不属于上游会话 ledger，所以 trace 的 `run` 可为空；本机短测试有完整工具事件及成功终止事件，Bridge 使用终止事件核对完成，不写入或伪造上游会话 ledger。

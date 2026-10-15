@@ -29,6 +29,8 @@ test('uses public API, exact PDF/parent/library, separate conversation, no UI se
   assert.equal(req.pdfPaperContexts, undefined);
   assert.equal(req.fullTextPaperContexts[0].contextItemId, 13);
   assert.equal(req.conversationKey, j.conversationKey); assert.equal(req.apiKey, 'SECRET');
+  assert.match(req.userText, /不要传 attachmentId、name、filePath/);
+  assert.match(req.userText, /完整主图标签/); assert.ok(req.userText.endsWith(j.prompt));
   assert.equal(calls[0].opts.signal, controller.signal); assert.equal(JSON.stringify(j).includes('SECRET'), false);
 });
 test('missing/not initialized API yields WAITING_LLM rather than a lost task', () => {
@@ -75,7 +77,38 @@ test('completed-shaped response with failed trace must not save an unfinished an
 });
 test('caption-only answer without a successful image read must not be saved as visual review', async () => {
   const { adapter } = setup({ runTurn: async () => ({ kind: 'completed', runId: 'run-1', text: 'caption summary' }) });
-  await assert.rejects(adapter.run(paper(), job()), /未观测到成功的图像读取/);
+  await assert.rejects(adapter.run(paper(), job()), /未调用 Figure 图像读取工具/);
+  assert.equal(adapter.diagnostics().figureCalls, 0);
+  assert.equal(adapter.diagnostics().images, 0);
+});
+test('persists a safe summary when Figure reading fails', async () => {
+  const { adapter } = setup({ async runTurn(req, emit) {
+    emit({ type: 'tool_call', name: 'paper_read', input: { mode: 'figures', labels: ['Figure 1'] } });
+    emit({ type: 'tool_result', name: 'paper_read', input: { mode: 'figures' }, ok: false,
+      error: 'request https://server.invalid/?api_key=SECRET failed' });
+    return { kind: 'completed', runId: 'run-failed-figure', text: 'caption summary' };
+  } });
+  await assert.rejects(adapter.run(paper(), job()), /Figure 图像读取失败/);
+  const d = adapter.diagnostics();
+  assert.equal(d.figureCalls, 1); assert.equal(d.figureResults, 1);
+  assert.equal(d.figureFailures, 1); assert.equal(d.toolErrors, 1); assert.equal(d.images, 0);
+  assert.equal(JSON.stringify(d).includes('SECRET'), false);
+  assert.equal(d.failures[0].tool, 'paper_read'); assert.equal(d.failures[0].mode, 'figures');
+});
+test('records no-crop guidance without misclassifying the next text read as Figure mode', async () => {
+  const { adapter } = setup({ async runTurn(req, emit) {
+    emit({ type: 'tool_call', name: 'paper_read', input: { mode: 'figures', figureLabels: ['Figure 1'] } });
+    emit({ type: 'tool_result', name: 'paper_read', ok: true, artifacts: [],
+      content: { mode: 'figures', guidance: 'No extracted figure crop was produced.' } });
+    emit({ type: 'tool_call', name: 'paper_read', input: { sections: ['Results'] } });
+    emit({ type: 'tool_result', name: 'paper_read', ok: true, artifacts: [], content: {} });
+    return { kind: 'completed', runId: 'run-no-crop', text: 'text-only answer' };
+  } });
+  await assert.rejects(adapter.run(paper(), job()), /Figure 图像读取失败/);
+  const d = adapter.diagnostics();
+  assert.equal(d.paperReadCalls, 2); assert.equal(d.figureCalls, 1);
+  assert.equal(d.figureResults, 1); assert.equal(d.figureFailures, 1); assert.equal(d.toolErrors, 0);
+  assert.equal(d.failures[0].message, 'No extracted figure crop was produced.');
 });
 test('fallback, empty answer, missing PDF and wrong scope all fail clearly', async () => {
   for (const result of [{ kind: 'fallback', reason: 'unsupported' }, { kind: 'completed', text: '  ' }]) {

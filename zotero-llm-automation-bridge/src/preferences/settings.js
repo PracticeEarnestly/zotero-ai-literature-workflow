@@ -87,8 +87,24 @@ Bridge.initPreferences = win => {
       cell(row, String(job.attempts || 0));
       cell(row, formatTime(job.updatedAt || job.completedAt || job.createdAt));
       const detail = cell(row, job.error || (job.noteID ? `笔记 #${job.noteID}` : "—"));
+      if (job.diagnostics) {
+        const d = job.diagnostics, parts = [
+          `工具调用 ${d.toolCalls || 0}`,
+          `paper_read ${d.paperReadCalls || 0}`,
+          `Figure ${d.figureCalls || 0}`,
+          `图像 ${d.images || 0}`,
+          `工具错误 ${d.toolErrors || 0}`,
+        ];
+        if (d.lastTool) parts.push(`最后工具 ${d.lastTool}`);
+        detail.appendChild(doc.createElementNS("http://www.w3.org/1999/xhtml", "br"));
+        detail.appendChild(doc.createTextNode(`诊断：${parts.join("；")}`));
+        for (const failure of d.failures || []) {
+          detail.appendChild(doc.createElementNS("http://www.w3.org/1999/xhtml", "br"));
+          detail.appendChild(doc.createTextNode(`工具失败：${failure.tool}${failure.mode ? `/${failure.mode}` : ""}${failure.message ? `：${failure.message}` : ""}`));
+        }
+      }
       if (["FAILED", "WAITING_LLM"].includes(job.status)) {
-        if (job.error) detail.appendChild(doc.createElementNS("http://www.w3.org/1999/xhtml", "br"));
+        detail.appendChild(doc.createElementNS("http://www.w3.org/1999/xhtml", "br"));
         const button = doc.createElementNS("http://www.w3.org/1999/xhtml", "button"); button.textContent = "使用当前模型重试";
         button.addEventListener("click", async () => {
           button.disabled = true;

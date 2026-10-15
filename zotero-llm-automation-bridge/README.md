@@ -1,4 +1,4 @@
-# Zotero LLM Automation Bridge 0.1.7
+# Zotero LLM Automation Bridge 0.1.8
 
 一个独立的 Zotero 插件。Style 的 Extra 评分从低于 5 变为 5，或现有五星论文从未自动化时，它把论文加入串行队列，通过 llm-for-zotero 的公开 Agent API 分析图表，再保存论文子笔记。
 
@@ -6,7 +6,7 @@
 
 ## 安装与首次使用
 
-1. 在 Zotero 的“工具 → 插件”中选择“从文件安装插件”，打开 [Release 中的 XPI](https://github.com/PracticeEarnestly/zotero-ai-literature-workflow/releases/tag/bridge-v0.1.7)。已在 Windows Zotero 10.0.6 注册并加载；真实验证见下方记录。
+1. 下载仓库中的 [Bridge 0.1.8 XPI](https://github.com/PracticeEarnestly/zotero-ai-literature-workflow/raw/refs/heads/main/release/zotero-llm-automation-bridge-0.1.8.xpi)，然后在 Zotero 的“工具 → 插件”中选择“从文件安装插件”。已在 Windows Zotero 10.0.6 注册并加载；真实验证见下方记录。
 2. 确认 Style 使用 Extra 评分模式，llm-for-zotero 使用原生 Agent 对话系统。
 3. 在 Zotero 设置中的 **LLM Automation Bridge** 面板选择已配置的 API 模型。模型必须支持工具调用和图像输入。
 4. 检查 Prompt 和保存选项。默认启用自动化。启动时，现有五星论文只要没有任何 Bridge 任务记录，也没有同步到本机的 Bridge 自动笔记，就会进入队列。
@@ -21,6 +21,7 @@ Bridge 不保存新的模型密钥。它在执行时只读 llm-for-zotero 已配
 - 连续进入五星分别建立任务，按顺序运行。取消“降星后再次升至五星时重新分析”后，成功完成的论文不再自动重跑。
 - 不改评分、标签、其他插件的笔记，也不直接解析 PDF/MinerU。只调用 `Zotero.LLMForZotero.api.agent`。
 - 使用公开 Gateway 解析明确的父条目、文库和 PDF 附件。无需打开 llm-for-zotero 侧栏或选中目标论文。
+- Adapter 会在每次任务前附加一段工具兼容约束：Figure 首次按完整主图标签取图，`figures` 模式不传仅供 `visual/capture` 使用的 selector；没有裁图时再使用现有 MinerU 图像或 `visual` 读取。该约束不改动用户 Prompt，也不修改 llm-for-zotero。
 - 模型不支持工具调用或视觉输入时不调用模型。不把没有成功图像读取记录的回答保存成完成的视觉精读。
 - Prompt 内置“顺序解读”独立模板，保留其 Results 证据顺序、逐 panel 解析和证据审查要求。前面加了工具调用和 Bridge 保存说明。安装后可在 Bridge 设置中修改。
 - 设置面板读取 llm-for-zotero 当前的 API 模型和自定义 Prompt。可选择一个自定义 Prompt 并载入 Bridge；保存后形成独立副本和新版本，不会反向修改 llm-for-zotero，也不会在上游变化时静默覆盖 Bridge 配置。
@@ -29,7 +30,7 @@ Bridge 不保存新的模型密钥。它在执行时只读 llm-for-zotero 已配
 - 先保存分析正文，再写笔记。笔记写入失败后重试不会再次调用模型。同一 job 的笔记标记用于处理笔记已写入、状态尚未落盘的中断。
 - Agent 请求额外确认时明确拒绝，任务失败，不自动授予写入或系统命令权限。
 - 后端缺失或初始化时保留 `WAITING_LLM`，每 10 秒检查。失败任务没有自动模型重试；可在面板手动重试。手动重试采用当前保存的模型选择，保留原任务的 Prompt。
-- 设置面板用表格显示最近 30 个任务，包括状态、文献、评分变化、Prompt 版本、模型、尝试次数、更新时间和详情。失败或等待后端的任务可直接在表格中重试。
+- 设置面板用表格显示最近 30 个任务，包括状态、文献、评分变化、Prompt 版本、模型、尝试次数、更新时间和详情。每次运行会保存工具调用数、`paper_read`/Figure 调用数、返回图像数、最后工具和经过脱敏的工具错误。失败或等待后端的任务可直接在表格中重试。
 - 设置面板提供“重新扫描未处理的五星论文”按钮。补录任务的评分来源显示为“现有 5”。
 - 禁用或卸载时移除监听器、清理定时器、取消运行。Prompt 和队列文件保留。
 

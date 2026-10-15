@@ -15,6 +15,7 @@ Bridge.TaskQueue = class {
           const item = await this.getItem(job.libraryID, job.key);
           if (!Bridge.isPaper(item)) throw new Bridge.WorkflowError("任务论文不存在或已删除");
           if (!job.answer) {
+            this.adapter.resetDiagnostics?.();
             this.adapter.api();
             job.status = "RUNNING"; job.attempts++; job.updatedAt = new Date().toISOString(); delete job.error;
             await this.save(); this.changed();
@@ -22,6 +23,7 @@ Bridge.TaskQueue = class {
             if (this.stopped) throw new Bridge.WorkflowError("Bridge 已停止");
             job.answer = answer.text; job.runId = answer.runId; job.model = answer.model;
             job.visualImageCount = answer.visualImageCount;
+            job.diagnostics = answer.diagnostics || this.adapter.diagnostics?.();
             job.updatedAt = new Date().toISOString();
             // Persist the answer before note writing, so write failures and
             // restarts never need to purchase the same model run again.
@@ -36,6 +38,8 @@ Bridge.TaskQueue = class {
           // Upstream errors can contain request URLs or credentials. Keep a
           // generic message unless it is one of the bridge's own messages.
           job.error = this.abort?.signal.aborted ? "运行已停止" : Bridge.safeError(error);
+          const diagnostics = this.adapter.diagnostics?.();
+          if (diagnostics) job.diagnostics = diagnostics;
           job.updatedAt = new Date().toISOString();
         }
         await this.save(); this.changed(); this.abort = null;
@@ -53,6 +57,7 @@ Bridge.TaskQueue = class {
     // no new turn. No automatic retry of a possibly billable model request.
     if (!job.answer) job.conversationKey = this.state.nextConversation++;
     delete job.error;
+    delete job.diagnostics;
     return true;
   }
 };

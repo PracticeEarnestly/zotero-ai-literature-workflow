@@ -1,5 +1,18 @@
 # 验证记录
 
+## 0.1.8：任务工具诊断
+
+日期：2026-10-15。真实宿主：Windows Zotero 10.0.6，llm-for-zotero 3.9.11，Ethereal Style 6.0.91。
+
+- 失败任务现在保存工具调用数、`paper_read` 和 Figure 调用数、Figure 返回结果数、图像 artifact 数、最后工具、终止状态、runId 和经过脱敏的工具错误。
+- 设置页任务表格直接显示诊断摘要。手动重试时清除旧诊断，新一次运行独立记录。
+- 真实重试确认第一篇论文调用了两次 `paper_read(mode: figures)`。两个工具结果均正常返回，但没有图像 artifact；Agent 正常结束后，Bridge 将任务标为失败且没有保存仅依据文字或图注的结果。
+- 另一篇重试记录到 `selector_not_supported_for_mode`：Agent 在 `figures` 模式传入了只支持 `visual/capture` 的 `attachmentId` 和 `name`。Adapter 现在会在运行时附加兼容约束，禁止这组参数，并要求先用完整主图标签取图；这不改动用户保存的 Prompt。
+- 当前模型和同一批其他论文可以正常返回图像，因此本例定位为该次 Figure 裁图没有产物，不是模型配置整体失效。
+- 46 项 Node.js 测试通过，包括诊断落盘、重试清理、无裁图提示、模式计数和错误脱敏测试。安装包与本地构建包哈希一致，重启后已确认新诊断方法实际加载。
+
+XPI SHA-256：`67353119b9583a4a43cda3f6b88666b3a95d371cb57dfd1d54345f1216008dde`。
+
 ## 0.1.7：现有五星补录
 
 日期：2026-10-15。真实宿主：Windows Zotero 10.0.6，llm-for-zotero 3.9.11，Ethereal Style 6.0.91。

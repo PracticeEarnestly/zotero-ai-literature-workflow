@@ -1,6 +1,77 @@
 Bridge.WaitingLLM = class extends Error {};
 Bridge.LLMAdapter = class {
   constructor(zotero) { this.zotero = zotero; }
+  resetDiagnostics() {
+    this.progress = { phase: "PREPARING", events: 0, toolCalls: 0, toolResults: 0,
+      toolErrors: 0, paperReadCalls: 0, figureCalls: 0, figureResults: 0,
+      figureFailures: 0, images: 0, failures: [], updatedAt: new Date().toISOString() };
+  }
+  diagnostics() {
+    return this.progress ? JSON.parse(JSON.stringify(this.progress)) : null;
+  }
+  eventMode(event) {
+    const args = event.input || event.arguments || event.args || event.payload?.input
+      || event.payload?.arguments || event.payload?.args || {};
+    return typeof args.mode === "string" ? args.mode : "";
+  }
+  diagnosticMessage(event) {
+    const value = event.error || event.message || event.content?.error || event.content?.message
+      || event.content?.guidance || event.content?.reason;
+    if (value === undefined || value === null) return "";
+    let text;
+    try { text = typeof value === "string" ? value : JSON.stringify(value); }
+    catch (_) { text = String(value); }
+    return text.replace(/https?:\/\/\S+/gi, "[URL]")
+      .replace(/(authorization|api[_-]?key|bearer|token)\s*[:=]?\s*\S+/gi, "$1=[REDACTED]")
+      .replace(/[A-Za-z0-9_\-]{48,}/g, "[REDACTED]").slice(0, 240);
+  }
+  recordEvent(event) {
+    const progress = this.progress;
+    progress.events++; progress.updatedAt = new Date().toISOString();
+    progress.lastEvent = event.type;
+    const name = /^[a-z_]+$/.test(event.name || "") ? event.name : "";
+    const explicitMode = this.eventMode(event);
+    let mode = explicitMode;
+    if (event.type !== "tool_call" && !mode && name && name === progress.lastTool)
+      mode = progress.lastToolMode || "";
+    if (name) progress.lastTool = name;
+    if (event.type === "tool_call") progress.lastToolMode = explicitMode;
+    else if (mode) progress.lastToolMode = mode;
+    if (event.type === "tool_call") {
+      progress.toolCalls++;
+      if (name === "paper_read") {
+        progress.paperReadCalls++;
+        if (mode === "figures") progress.figureCalls++;
+      }
+    }
+    if (event.type === "tool_result") {
+      progress.toolResults++;
+      const imageCount = event.ok === true && ["paper_read", "file_io"].includes(name)
+        ? (event.artifacts || []).filter(artifact => artifact.kind === "image").length : 0;
+      progress.images += imageCount;
+      if (name === "paper_read" && (mode === "figures" || imageCount)) {
+        progress.figureResults++;
+        if (event.ok === true && !imageCount) {
+          this.recordFailure(name, mode, event, false);
+        }
+      }
+      if (event.ok === false) this.recordFailure(name, mode, event);
+    }
+    if (event.type === "tool_error") this.recordFailure(name, mode, event);
+    if (event.type === "provider_event" && event.providerType === "agent_run_stop") {
+      progress.terminalStatus = event.payload?.status;
+    }
+  }
+  recordFailure(name, mode, event, countAsToolError = true) {
+    if (countAsToolError) this.progress.toolErrors++;
+    if (name === "paper_read" && mode === "figures") this.progress.figureFailures++;
+    const row = { tool: name || "unknown" };
+    if (mode) row.mode = mode;
+    const message = this.diagnosticMessage(event);
+    if (message) row.message = message;
+    this.progress.failures.push(row);
+    if (this.progress.failures.length > 8) this.progress.failures.shift();
+  }
   api() {
     const api = this.zotero.LLMForZotero?.api?.agent;
     if (!api || typeof api.runTurn !== "function" || typeof api.getZoteroGateway !== "function")
@@ -44,7 +115,7 @@ Bridge.LLMAdapter = class {
       providerProtocol: row.providerProtocol || group.providerProtocol || "openai_chat_compat" };
   }
   async run(item, job, signal) {
-    this.progress = { phase: "PREPARING", events: 0, images: 0, updatedAt: new Date().toISOString() };
+    this.resetDiagnostics();
     const api = this.api();
     const system = this.zotero.Prefs.get("extensions.zotero.llmforzotero.conversationSystem", true);
     if (system && system !== "upstream") throw new Bridge.WaitingLLM("请将 llm-for-zotero 对话系统切换为原生 Agent；此版本尚未接入外部运行时");
@@ -58,22 +129,16 @@ Bridge.LLMAdapter = class {
       scopeType: "paper", activeItemId: item.id, item, libraryID: item.libraryID,
       activePaperContext: { ...context, libraryID: item.libraryID },
       fullTextPaperContexts: [{ ...context, libraryID: item.libraryID }],
-      userText: job.prompt, history: [], ...model };
+      userText: Bridge.agentToolContract + job.prompt, history: [], ...model };
     if (typeof api.getCapabilities !== "function" || typeof api.resolveConfirmation !== "function"
         || typeof api.getRunTrace !== "function") throw new Bridge.WorkflowError("llm-for-zotero 公开 API 版本不兼容");
     const cap = await api.getCapabilities(request);
     if (!cap.toolCalls) throw new Bridge.WorkflowError("所选模型不支持 Agent 工具调用");
     if (!(cap.contentInputs?.images ?? cap.multimodal)) throw new Bridge.WorkflowError("所选模型不支持视觉输入，无法完成真实读图");
-    let confirmation = false, terminalStatus, visualImageCount = 0;
+    let confirmation = false, terminalStatus;
     this.progress.phase = "RUNNING_AGENT";
     const result = await api.runTurn(request, event => {
-      this.progress.events++; this.progress.updatedAt = new Date().toISOString();
-      this.progress.lastEvent = event.type;
-      if (["tool_call", "tool_result"].includes(event.type) && /^[a-z_]+$/.test(event.name || ""))
-        this.progress.lastTool = event.name;
-      if (event.type === "tool_result" && event.ok === true && ["paper_read", "file_io"].includes(event.name))
-        visualImageCount += (event.artifacts || []).filter(artifact => artifact.kind === "image").length;
-      this.progress.images = visualImageCount;
+      this.recordEvent(event);
       if (event.type === "provider_event" && event.providerType === "agent_run_stop") terminalStatus = event.payload?.status;
       if (event.type === "confirmation_required") {
         confirmation = true;
@@ -86,10 +151,21 @@ Bridge.LLMAdapter = class {
     if (confirmation) throw new Bridge.WorkflowError("Agent 请求额外确认；已拒绝并停止保存，请在 llm-for-zotero 中人工检查");
     if (result?.kind !== "completed" || typeof result.text !== "string" || !result.text.trim())
       throw new Bridge.WorkflowError("Agent 未返回完整分析");
+    this.progress.runId = result.runId;
     // `kind: completed` alone also occurs on failed terminal runs in upstream.
     const trace = await api.getRunTrace(result.runId);
-    if ((trace?.run?.status || terminalStatus) !== "completed") throw new Bridge.WorkflowError("Agent 未正常完成；分析未写入笔记");
-    if (!visualImageCount) throw new Bridge.WorkflowError("未观测到成功的图像读取；请检查 Figure/PDF 工具及模型，不将仅图注解读保存为深度精读");
-    return { text: result.text.trim(), runId: result.runId, model: model.model, visualImageCount };
+    this.progress.terminalStatus = trace?.run?.status || terminalStatus;
+    if (this.progress.terminalStatus !== "completed") throw new Bridge.WorkflowError("Agent 未正常完成；分析未写入笔记");
+    this.progress.phase = "VALIDATING_RESULT";
+    if (!this.progress.images) {
+      if (!this.progress.figureCalls)
+        throw new Bridge.WorkflowError("Agent 未调用 Figure 图像读取工具；已拒绝保存仅依据文字或图注的回答");
+      if (this.progress.figureFailures || this.progress.toolErrors)
+        throw new Bridge.WorkflowError("Figure 图像读取失败或未返回裁图；请查看任务诊断后重试");
+      throw new Bridge.WorkflowError("Figure 图像读取没有返回图像；已拒绝保存仅依据文字或图注的回答");
+    }
+    this.progress.phase = "COMPLETED";
+    return { text: result.text.trim(), runId: result.runId, model: model.model,
+      visualImageCount: this.progress.images, diagnostics: this.diagnostics() };
   }
 };

@@ -67,3 +67,11 @@ test('unknown backend errors cannot leak a key into persisted status', async () 
   const { q, s } = setup({ adapter: { api() {}, async run() { throw Error('https://server.invalid/?key=SECRET'); } } });
   await q.pump(); assert.equal(s.jobs[0].status, 'FAILED'); assert.equal(JSON.stringify(s).includes('SECRET'), false);
 });
+test('failed model work persists adapter diagnostics and retry clears stale details', async () => {
+  const diagnostics = { toolCalls: 1, paperReadCalls: 1, figureCalls: 1, images: 0,
+    toolErrors: 1, lastTool: 'paper_read', failures: [{ tool: 'paper_read', mode: 'figures' }] };
+  const { q, s } = setup({ adapter: { resetDiagnostics() {}, api() {}, diagnostics: () => diagnostics,
+    async run() { throw new Error('provider failure'); } } });
+  await q.pump(); assert.deepEqual(s.jobs[0].diagnostics, diagnostics);
+  assert.equal(q.retry('job-1'), true); assert.equal(s.jobs[0].diagnostics, undefined);
+});
