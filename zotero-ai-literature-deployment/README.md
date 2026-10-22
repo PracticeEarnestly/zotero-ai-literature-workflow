@@ -34,6 +34,6 @@ L1/L2/L3 自定义 Skill 位于 llm-for-zotero 的实际用户 Skills 目录；�
 | `L2：Evidence Card` | `02_L2_EvidenceCard` |
 | `L3：Deep Reading` | `03_L3_DeepReading` |
 
-自定义 AI Butler 3.8.5.25 已移除官方更新地址，日常不会自动被上游版本覆盖。本地补丁提供自动 L1、评级触发的自动 L2/L3、L3 队列交接唤醒、失败任务手动重跑、Collection 批量 L1，llm-for-zotero MinerU 缓存复用与 Zotero 原生 ZIP 后备读取。工作流层级采用 Literature Flow 的精简规则：只使用固定阶段标签、结果追加到已有 AI Note，且非 L1 的旧 AI Note 不会阻止新 PDF 自动进入 L1。详见 [3.8.5.25 发布说明](RELEASE_3.8.5.25.md)、[LITERATURE_FLOW_ALIGNMENT.md](LITERATURE_FLOW_ALIGNMENT.md) 与 [UPGRADE_GUARD.md](UPGRADE_GUARD.md)。
+自定义 AI Butler 3.8.5.28 已移除官方更新地址，日常不会自动被上游版本覆盖。本地补丁提供自动 L1、评级触发的自动 L2/L3、L3 队列交接唤醒、失败任务手动重跑、Collection 批量 L1，llm-for-zotero MinerU 缓存复用与 Zotero 原生 ZIP 后备读取。3.8.5.28 还会拒绝只有 reasoning 而没有正文的响应，并在笔记已经保存、完成标签因 Zotero 数据库忙而失败时只补写标签，避免再次调用模型。工作流层级采用 Literature Flow 的精简规则：只使用固定阶段标签、结果追加到已有 AI Note，且非 L1 的旧 AI Note 不会阻止新 PDF 自动进入 L1。详见 [3.8.5.28 发布说明](RELEASE_3.8.5.28.md)、[LITERATURE_FLOW_ALIGNMENT.md](LITERATURE_FLOW_ALIGNMENT.md) 与 [UPGRADE_GUARD.md](UPGRADE_GUARD.md)。
 
 详见 [DEPLOYMENT_AUDIT.md](DEPLOYMENT_AUDIT.md)、[DEPLOYMENT_COMPLETE.md](DEPLOYMENT_COMPLETE.md) 和 [ROLLBACK.md](ROLLBACK.md)。

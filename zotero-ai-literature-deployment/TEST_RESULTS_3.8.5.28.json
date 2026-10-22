@@ -1,0 +1,40 @@
+{
+  "version": "3.8.5.28",
+  "status": "offline-validation-passed",
+  "source": {
+    "kind": "P520-installed-runtime-readback",
+    "runtime_xpi_sha256": "4dc2dc9256173a2a0ae69495162c909e3357218541207836bff9da6b3ea48a2b",
+    "runtime_files": 95,
+    "tracked_ai_butler_js_sha256": "9c3e7942714ba4140778a34a7bf6d2341e78fad54885f2566710b3471392256a"
+  },
+  "public_candidate": {
+    "path": "release/zotero-ai-butler-3.8.5.28-public.xpi",
+    "sha256": "d323e7a7039b86b70555f8ccc5d30d4a3f9cc8ac2970c908acb86311c0b9c048",
+    "files": 95,
+    "update_url_removed": true,
+    "runtime_code_match": true
+  },
+  "checks": {
+    "javascript_syntax": "pass",
+    "zip_integrity": "pass",
+    "workflow_markers": "pass",
+    "private_address_and_credential_patterns": "pass-no-findings",
+    "git_diff_check": "pass",
+    "bridge_tests": {
+      "status": "pass",
+      "passed": 46,
+      "failed": 0
+    }
+  },
+  "prompt_hashes": {
+    "01_L1_OneSentence.md": "b58c9f56ff794fb68ef126c1e5c383be99a84b63c88add65a36b7420913b8d80",
+    "02_L2_EvidenceCard.md": "c8ba8b4eaa40ff9b8818ae076588869a7c63e67d27829febddf2f2944a97639d",
+    "03_L3_DeepReading.md": "85607d2ba7f5ebdedbb3481290922d06334e1a722255f789edcba629d26042d7"
+  },
+  "not_performed": [
+    "install public candidate into Mac Zotero",
+    "replace the running P520 extension",
+    "submit a real L1, L2, or L3 library task",
+    "modify any Zotero library data"
+  ]
+}

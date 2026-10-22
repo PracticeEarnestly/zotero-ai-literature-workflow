@@ -49,6 +49,20 @@ preferences are not copied because they can contain credentials.
    hashes even though both report version `3.8.5.25`. The installed Mac package
    therefore remains a runtime snapshot, not the reproducible public baseline.
 
+## Reconstructed public 3.8.5.28 candidate
+
+The P520 runtime code delta has been imported into tracked source while keeping
+the repository-owned homepage and removing the upstream auto-update URL. A
+credential-free public candidate was rebuilt from that source:
+
+- Package: `release/zotero-ai-butler-3.8.5.28-public.xpi`
+- SHA-256: `d323e7a7039b86b70555f8ccc5d30d4a3f9cc8ac2970c908acb86311c0b9c048`
+- Files: 95
+- ZIP integrity: pass
+- Public manifest version: `3.8.5.28`
+- Runtime code match: pass for `content/scripts/aiButler.js`
+- Private address and credential pattern scan: no findings
+
 ## Publication and deployment controls
 
 - Never commit API keys, tokens, private endpoints, Zotero databases, user
@@ -65,8 +79,7 @@ preferences are not copied because they can contain credentials.
 
 1. Complete the Windows-to-GitHub difference audit.
 2. Review and merge safe historical assets from the Windows audit branch.
-3. Reconstruct the `3.8.5.28` source delta from authoritative assets and add its
-   release notes and validation evidence.
-4. Build and validate a credential-free public `3.8.5.28` candidate.
-5. Decide separately whether the Mac reader installation should be upgraded;
+3. Compare the reconstructed release notes with the Windows `3.8.5.26`–
+   `3.8.5.28` historical notes and retain any additional verified evidence.
+4. Decide separately whether the Mac reader installation should be upgraded;
    keep P520 as the only active coordinator unless a manual failover is intended.

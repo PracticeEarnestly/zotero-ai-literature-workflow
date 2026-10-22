@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "zotero-ai-butler",
-  "version": "3.8.5.25",
+  "version": "3.8.5.28",
   "description": "Your personal AI butler, automatically and meticulously reads papers and summarizes notes.",
   "homepage_url": "https://github.com/PracticeEarnestly/zotero-ai-literature-workflow",
   "author": "Steven Jianhao Li",

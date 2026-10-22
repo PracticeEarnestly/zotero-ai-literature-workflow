@@ -27,7 +27,7 @@ MARKERS = (
     "scheduleQueuedTaskStart(taskQueue)",
     'workflowLevel: "L2"',
     'workflowLevel: "L3"',
-    "AI:${workflowLevel}",
+    "getWorkflowCompletionTag(workflowLevel)",
     "getFirstAccessiblePDFAttachment(item)",
     "[AI-Butler] Resuming persisted pending tasks",
     'noteStrategy: "append"',
@@ -53,6 +53,14 @@ MARKERS = (
     'taskIntent: "manual-rerun"',
     "workflowLlmCacheDiagnosticsByItem",
     "Data:AvailableOnRequest",
+    "Summary response metrics:",
+    "validateResponseText",
+    "LLMEmptyResponseError",
+    "Recovered missing ${workflowLevel} workflow heading",
+    "ensureWorkflowCompletionTag",
+    "resumeSavedWorkflowArtifact",
+    "savedArtifactRecoveryCount",
+    "Recovered saved-note tasks for tag-only repair",
 )
 XPI_NAME = "zotero-ai-butler@github.com.xpi"
 
@@ -60,7 +68,7 @@ XPI_NAME = "zotero-ai-butler@github.com.xpi"
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile-dir", required=True, type=Path, help="Zotero profile directory")
-    parser.add_argument("--expected-version", default="3.8.5.25")
+    parser.add_argument("--expected-version", default="3.8.5.28")
     args = parser.parse_args()
 
     xpi_path = args.profile_dir / "extensions" / XPI_NAME

@@ -2,7 +2,7 @@
 
 This repository contains the reproducible deployment package for the Zotero AI literature workflow.
 
-It includes deployment documentation, L1–L3 prompt templates, workflow scripts, configuration examples, the current AI Butler patch source, and one reviewed public XPI. Local model endpoints, API credentials, Zotero data, backups, and intermediate build packages are deliberately excluded.
+It includes deployment documentation, L1–L3 prompt templates, workflow scripts, configuration examples, the current AI Butler patch source, and reviewed public XPI releases. Local model endpoints, API credentials, Zotero data, backups, and intermediate build packages are deliberately excluded.
 
 ## Workflow
 
@@ -13,13 +13,13 @@ It includes deployment documentation, L1–L3 prompt templates, workflow scripts
 
 For the full deployment guide, start with [Zotero_AI_Literature_L1_L2_L3_Codex_Deployment_V2.md](zotero-ai-literature-deployment/Zotero_AI_Literature_L1_L2_L3_Codex_Deployment_V2.md).
 
-## AI Butler 3.8.5.25
+## AI Butler 3.8.5.28
 
-The current reviewed package is [`release/zotero-ai-butler-3.8.5.25-public.xpi`](release/zotero-ai-butler-3.8.5.25-public.xpi). It contains no API key, private LAN/ZeroTier address, or upstream auto-update URL. Configure model endpoints after installation.
+The current reviewed package is [`release/zotero-ai-butler-3.8.5.28-public.xpi`](release/zotero-ai-butler-3.8.5.28-public.xpi). It contains no API key, private LAN/ZeroTier address, or upstream auto-update URL. Configure model endpoints after installation.
 
-SHA-256: `51525ead5ad40a8d88ef37e39a47e8f494852545efdb29352ddef0df51e80a7b`
+SHA-256: `d323e7a7039b86b70555f8ccc5d30d4a3f9cc8ac2970c908acb86311c0b9c048`
 
-This version reuses synchronized `llm-for-zotero` MinerU ZIP caches before parsing a PDF again. It also adds Zotero's native ZIP reader as a fallback for scanned PDFs, preserves detailed cache diagnostics, and allows a failed fixed-ID workflow task to be manually rerun. See [release notes](zotero-ai-literature-deployment/RELEASE_3.8.5.25.md).
+This version retains the synchronized `llm-for-zotero` MinerU cache integration from 3.8.5.25, rejects reasoning-only or incomplete model responses, recovers a missing standard L2/L3 heading only after all required sections pass validation, and can repair a missing completion tag without calling the model again when the note was already saved. See [release notes](zotero-ai-literature-deployment/RELEASE_3.8.5.28.md).
 
 ## Minimal plugin release
 

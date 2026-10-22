@@ -10219,6 +10219,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
             let gotAnyDelta = false;
             let sawDone = false;
             let finishReason = "";
+            let reasoningLength = 0;
             let protocolError = null;
             let abortError2 = null;
             let cleanupAbortSignal2;
@@ -10270,6 +10271,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
                             const evt = JSON.parse(jsonStr);
                             const choice = evt?.choices?.[0];
                             if (typeof choice?.finish_reason === "string" && choice.finish_reason) finishReason = choice.finish_reason;
+                            if (typeof choice?.delta?.reasoning_content === "string") reasoningLength += choice.delta.reasoning_content.length;
                             const delta = evt?.choices?.[0]?.delta?.content;
                             if (typeof delta === "string" && delta.length > 0) {
                               gotAnyDelta = true;
@@ -10336,6 +10338,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
               cleanupAbortSignal2?.();
             }
             const streamed = chunks.join("");
+            ztoolkit.log("[AI-Butler] Summary response metrics:", { model, finishReason, contentLength: streamed.length, reasoningLength });
             if (protocolError) throw createIncompleteStreamError(streamed);
             if (finishReason && finishReason !== "stop") throw createIncompleteStreamError(streamed);
             if (!sawDone && finishReason !== "stop") throw createIncompleteStreamError(streamed);
@@ -10366,6 +10369,7 @@ ${typeof rawResponse === "string" ? rawResponse : JSON.stringify(rawResponse, nu
             const text2 = choice?.message?.content || "";
             const finishReason = String(choice?.finish_reason || "");
             const result = typeof text2 === "string" ? text2 : JSON.stringify(text2);
+            ztoolkit.log("[AI-Butler] Summary response metrics:", { model, finishReason, contentLength: result.length, reasoningLength: typeof choice?.message?.reasoning_content === "string" ? choice.message.reasoning_content.length : 0 });
             if (finishReason && finishReason !== "stop") throw createIncompleteStreamError(result);
             if (!finishReason) throw createIncompleteStreamError(result);
             if (onProgress && result) await onProgress(result);
@@ -14318,6 +14322,15 @@ ${rawResponse}`;
               throw this.toApiCallError(endpoint, error);
             }
           }
+          // Validate the usable note body inside the API attempt loop. A successful
+          // HTTP response can contain only reasoning, which is not a saved result.
+          if (typeof request.validateResponseText === "function") {
+            try {
+              text2 = request.validateResponseText(text2);
+            } catch (error) {
+              throw this.toApiCallError(endpoint, error);
+            }
+          }
           return this.toResponse(
             text2,
             endpoint.providerType,
@@ -14328,7 +14341,7 @@ ${rawResponse}`;
         }
         static async runGenerateWithFixedEndpoint(endpoint, request, prompt) {
           const useRetry = request.transport?.retry ?? true;
-          const maxAttempts = useRetry ? LLMEndpointManager.getMaxAttemptCount() : 1;
+          let maxAttempts = useRetry ? LLMEndpointManager.getMaxAttemptCount() : 1;
           let lastError = null;
           for (let attempt = 0; attempt < maxAttempts; attempt++) {
             throwIfAborted(request.transport?.abortSignal);
@@ -14339,6 +14352,9 @@ ${rawResponse}`;
                 throw normalizeAbortError(error, request.transport?.abortSignal);
               }
               lastError = error instanceof Error ? error : new Error(String(error));
+              // A one-attempt configuration still permits one recovery for an
+              // unusable summary body; all other failures keep their old budget.
+              if (useRetry && maxAttempts === 1 && (error?.name === "LLMEmptyResponseError" || error?.originalError?.name === "LLMEmptyResponseError")) maxAttempts = 2;
               ztoolkit.log(
                 `[LLMService] API failed via ${endpoint.name} (${attempt + 1}/${maxAttempts}): ${lastError.message}`
               );
@@ -32780,6 +32796,16 @@ ${combinedContent}`;
               };
               const workflowFallbackEndpointId = inferredWorkflowLevel ? getWorkflowFallbackEndpointId(inferredWorkflowLevel, endpointId) : void 0;
               const generateSummary = async (request) => {
+                request.validateResponseText = (text) => {
+                  const body = this.sanitizeModelOutputForNote(text, inferredWorkflowLevel);
+                  if (!body.trim()) {
+                    const error = new Error("AI 返回内容为空或仅包含思考过程；模型调用未产生可保存的正文");
+                    error.name = "LLMEmptyResponseError";
+                    error.diagnostics = { workflowLevel: inferredWorkflowLevel, rawContentLength: String(text || "").length, usableContentLength: 0 };
+                    throw error;
+                  }
+                  return body;
+                };
                 if (!endpointId) return llmService_default.generate(request);
                 try {
                   return await llmService_default.generateWithEndpoint(endpointId, request);
@@ -33364,14 +33390,22 @@ ${details}`);
             const body = summaryMatch ? summaryMatch[1].trim() : withoutTags.replace(/^\s*#?\s*\[L1\][^\n]*\n?/i, "").trim();
             if (!body || !/[\p{L}\p{N}]/u.test(body) || /^SUMMARY\s*[:：]?$/i.test(body)) fail("missing SUMMARY body");
           } else if (isDefaultContract) {
+            const canonicalHeading = workflowLevel === "L2" ? "[L2] Evidence Card" : "[L3] Deep Reading";
             const heading = workflowLevel === "L2" ? /\[L2\]\s*Evidence\s*Card/i : /\[L3\]\s*Deep\s*Reading/i;
-            if (!heading.test(withoutTags)) fail("missing workflow heading");
             const required = workflowLevel === "L2" ? [
               "One-Sentence Conclusion", "Research Question", "Study Design", "Biological Context", "Key Molecules / Pathways", "Direction", "Main Evidence", "Quantitative Evidence", "Evidence Level", "Mechanistic Chain", "Causality", "Key Limitation", "Review Role", "Safe Review Statement", "Identifier"
             ] : [
               "One-Sentence Conclusion", "Research Question & Knowledge Gap", "Study Architecture", "Evidence Card", "Main Findings", "Evidence Chain", "Mechanistic Model", "Evidence Boundary", "Evidence Level", "Statistical and Methodological Appraisal", "Key Strengths", "Key Limitations", "Review-Ready Statements", "Claims to Avoid", "Review Role", "Review Keywords"
             ];
-            const parsed = this.parseWorkflowHeadings(withoutTags);
+            let parsed = this.parseWorkflowHeadings(withoutTags);
+            if (!heading.test(withoutTags)) {
+              const hasCompleteBody = required.every((section) => this.hasWorkflowSection(parsed, section));
+              if (!hasCompleteBody) fail("missing workflow heading");
+              withoutTags = `# ${canonicalHeading}\n\n${withoutTags}`;
+              parsedTags.content = withoutTags;
+              parsed = this.parseWorkflowHeadings(withoutTags);
+              ztoolkit.log(`[AI-Butler] Recovered missing ${workflowLevel} workflow heading after all required sections passed validation`);
+            }
             for (const section of required) if (!this.hasWorkflowSection(parsed, section)) fail(`missing or empty section: ${section}`);
           } else {
             const plain = withoutTags.replace(/^\s*#{1,6}[^\n]*\n?/, "").trim();
@@ -37443,6 +37477,52 @@ ${d.responseBody.substring(0, 1e3)}`;
          * @param taskId 任务ID
          * @returns 是否为快速失败（无 PDF 附件），用于批次配额判断
          */
+        getWorkflowCompletionTag(workflowLevel) {
+          const level = String(workflowLevel || "").toUpperCase();
+          return level === "L1" || level === "L2" || level === "L3" ? `AI:${level}` : "";
+        }
+        isZoteroDatabaseBusyError(error) {
+          const message = this.getTaskErrorMessage(error);
+          const stack = typeof error?.stack === "string" ? String(error.stack) : "";
+          const text2 = `${error?.name || ""}\n${message}\n${stack}`.toLowerCase();
+          return text2.includes("chrome://zotero/content/xpcom/db.js") || text2.includes("synclocal.js") || text2.includes("processconflicts") || text2.includes("executetransaction") || error?.name === "TimeoutError" && (text2.includes("zotero") || text2.includes("database") || text2.includes("sync"));
+        }
+        async ensureWorkflowCompletionTag(item, workflowLevel) {
+          const workflowTag = this.getWorkflowCompletionTag(workflowLevel);
+          if (!workflowTag) return false;
+          let lastError = null;
+          for (let attempt = 0; attempt < 2; attempt++) {
+            if (!(item.getTags?.() || []).some((tag) => tag.tag === workflowTag)) item.addTag(workflowTag);
+            try {
+              await item.saveTx();
+              return true;
+            } catch (error) {
+              lastError = error;
+              if (!this.isZoteroDatabaseBusyError(error) || attempt >= 1) throw error;
+              logTaskQueue(`[AI-Butler] Zotero database was busy while saving ${workflowTag}; retrying tag-only write`);
+              await Zotero.Promise.delay(1500);
+            }
+          }
+          throw lastError || new Error(`Unable to save ${workflowTag}`);
+        }
+        async resumeSavedWorkflowArtifact(task, item) {
+          const workflowLevel = String(task.artifact?.workflowLevel || task.options?.workflowLevel || "").toUpperCase();
+          if (!task.artifact?.saved || !this.getWorkflowCompletionTag(workflowLevel)) return false;
+          const noteId = Number(task.artifact.noteId || 0);
+          const note = noteId ? await Zotero.Items.getAsync(noteId) : null;
+          if (!note || note.parentID && note.parentID !== item.id) {
+            logTaskQueue(`[AI-Butler] Saved artifact metadata is stale; normal generation remains required: ${task.id}`);
+            task.artifact = void 0;
+            return false;
+          }
+          task.workflowStage = "正在补写完成标签...";
+          task.progress = 90;
+          this.notifyProgress(task.id, task.progress, task.workflowStage);
+          await this.ensureWorkflowCompletionTag(item, workflowLevel);
+          task.artifact.completionTagRepairedAt = (/* @__PURE__ */ new Date()).toISOString();
+          logTaskQueue(`[AI-Butler] Reused saved ${workflowLevel} note and repaired completion tag without calling the model: ${task.id}`);
+          return true;
+        }
         async executeTask(taskId) {
           const task = this.tasks.get(taskId);
           if (!task) {
@@ -37493,6 +37573,16 @@ ${d.responseBody.substring(0, 1e3)}`;
             if (!item) {
               throw new Error("\u6587\u732E\u6761\u76EE\u4E0D\u5B58\u5728");
             }
+            if (await this.resumeSavedWorkflowArtifact(task, item)) {
+              task.status = "completed" /* COMPLETED */;
+              task.progress = 100;
+              task.workflowStage = "完成！";
+              task.completedAt = /* @__PURE__ */ new Date();
+              task.duration = Math.floor((task.completedAt.getTime() - task.startedAt.getTime()) / 1e3);
+              this.notifyComplete(taskId, true);
+              this.notifyStream(taskId, { type: "finish" });
+              return false;
+            }
             const hasPdf = await PDFExtractor.hasPDFAttachment(item);
             if (!hasPdf) {
               throw new Error(NO_PDF_ERROR_MSG);
@@ -37540,11 +37630,10 @@ ${d.responseBody.substring(0, 1e3)}`;
               savedAt: (/* @__PURE__ */ new Date()).toISOString(),
               inputSource: task.options?.endpointId || "configured-endpoint"
             };
-            const workflowTag = workflowLevel === "L1" || workflowLevel === "L2" || workflowLevel === "L3" ? `AI:${workflowLevel}` : "";
-            if (workflowTag && !(item.getTags?.() || []).some((tag) => tag.tag === workflowTag)) {
-              item.addTag(workflowTag);
-              await item.saveTx();
-            }
+            // Persist the successfully written note before the separate tag write.
+            // A Zotero sync conflict can then recover by writing only the tag.
+            await this.saveToStorage();
+            await this.ensureWorkflowCompletionTag(item, workflowLevel);
             if (this.abortingTasks.has(taskId) || abortController.signal.aborted) {
               throw new Error(LLM_REQUEST_ABORT_MESSAGE);
             }
@@ -37610,6 +37699,7 @@ ${d.responseBody.substring(0, 1e3)}`;
           return value?.suppressTaskRetry === true || value?.name === "LLMApiCallError" || value?.name === "LLMApiExhaustedError" || this.isLikelyApiFailure(error, task);
         }
         isLikelyApiFailure(error, task) {
+          if (this.isZoteroDatabaseBusyError(error)) return false;
           const message = this.getTaskErrorMessage(error);
           const stack = typeof error?.stack === "string" ? String(error.stack) : "";
           const text2 = `${message}
@@ -37795,6 +37885,7 @@ ${stack}`.toLowerCase();
             }
             this.tasks.clear();
             let abortedTaskRecoveryCount = 0;
+            let savedArtifactRecoveryCount = 0;
             for (const taskData of data.tasks || []) {
               const task = {
                 ...taskData,
@@ -37804,6 +37895,15 @@ ${stack}`.toLowerCase();
               };
               const persistedLevel = String(task.options?.workflowLevel || "").toLowerCase();
               if (persistedLevel && task.id === `task-${task.itemId}`) task.id = `task-${task.itemId}-${persistedLevel}`;
+              const repairableSavedArtifact = resetProcessingTasks && task.status === "failed" /* FAILED */ && task.artifact?.saved === true && this.getWorkflowCompletionTag(task.artifact?.workflowLevel || task.options?.workflowLevel) && /TimeoutError|chrome:\/\/zotero\/content\/xpcom\/db\.js|syncLocal\.js|processConflicts/i.test(String(task.errorDetails || task.error || ""));
+              if (repairableSavedArtifact) {
+                task.status = "pending" /* PENDING */;
+                task.progress = 90;
+                task.workflowStage = "等待补写完成标签";
+                task.retryCount = 0;
+                task.completedAt = void 0;
+                savedArtifactRecoveryCount += 1;
+              }
               if (resetProcessingTasks && task.status === "processing" /* PROCESSING */) {
                 const wasUserAborted = task.error === LLM_REQUEST_ABORT_MESSAGE || task.errorDetails === TASK_ABORT_DETAIL || task.workflowStage === "\u6B63\u5728\u7EC8\u6B62";
                 if (wasUserAborted) {
@@ -37823,9 +37923,10 @@ ${stack}`.toLowerCase();
               this.tasks.set(task.id, task);
             }
             this.lastLoadedSnapshotAt = snapshotAt || null;
-            if (abortedTaskRecoveryCount > 0) {
+            if (abortedTaskRecoveryCount > 0 || savedArtifactRecoveryCount > 0) {
               void this.saveToStorage();
-              logTaskQueue(`[AI-Butler] Recovered aborted tasks from persisted queue: ${abortedTaskRecoveryCount}`);
+              if (abortedTaskRecoveryCount > 0) logTaskQueue(`[AI-Butler] Recovered aborted tasks from persisted queue: ${abortedTaskRecoveryCount}`);
+              if (savedArtifactRecoveryCount > 0) logTaskQueue(`[AI-Butler] Recovered saved-note tasks for tag-only repair: ${savedArtifactRecoveryCount}`);
             }
             logTaskQueue(`\u4ECE\u5B58\u50A8\u52A0\u8F7D ${this.tasks.size} \u4E2A\u4EFB\u52A1`);
           } catch (error) {
