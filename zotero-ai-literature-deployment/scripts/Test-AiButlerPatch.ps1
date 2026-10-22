@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$ProfileDirectory,
-    [string]$ExpectedVersion = '3.8.5.25'
+    [string]$ExpectedVersion = '5.1.0.3',
+    [string]$ExpectedUpdateUrl = 'https://github.com/PracticeEarnestly/zotero-ai-literature-workflow/releases/download/release/update.json'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -53,22 +54,33 @@ if (-not (Test-Path -LiteralPath $liveXpi -PathType Leaf)) {
 }
 
 $manifest = Get-ManifestEntry -XpiPath $liveXpi
-$automaticUpdateEndpointDisabled = -not $manifest.applications.zotero.update_url
+$updateEndpointControlled = ($manifest.applications.zotero.update_url -eq $ExpectedUpdateUrl)
 $markers = @(
-    'workflowPreset',
-    'collectionL1Summary',
-    'handleCollectionL1Summary',
-    'autoScanPromptName',
+    'zotero-itemmenu-ai-butler-workflow-preset',
+    'zotero-collectionmenu-ai-butler-workflow-preset',
+    'zotero-collectionmenu-ai-butler-workflow-l1',
+    'zotero-collectionmenu-ai-butler-workflow-l2',
+    'zotero-collectionmenu-ai-butler-workflow-l3',
+    'zotero-collectionmenu-ai-butler-workflow-repair',
+    'handleCollectionWorkflowLevel',
+    'handleCollectionRatedWorkflowRepair',
+    'handleSelectedWorkflowLevel',
+    'enqueueRatedWorkflow(item)',
+    'enqueueWorkflowLevel',
     'noteStrategy: "append"',
-    'prompt: options?.prompt',
-    'abortedTaskRecoveryCount',
-    'Recovered aborted tasks from persisted queue',
-    'readLlmForZoteroMineruCache',
-    'native-zip-fallback',
-    'direct-pdf-fallback',
-    'taskIntent: "manual-rerun"',
-    'workflowLlmCacheDiagnosticsByItem',
-    'Data:AvailableOnRequest'
+    'getWorkflowEndpointId',
+    'getWorkflowPrompt',
+    'getCompletedL1State',
+    'getWorkflowLevelState',
+    'applyWorkflowTags',
+    'AI_BUTLER_L1_DATA_AVAILABILITY_V1',
+    'AI_BUTLER_FINAL_OUTPUT_ONLY_V1',
+    'note-without-tag',
+    'duplicate-item-artifact',
+    'workflow-confirm-collection-level-title',
+    'coordinator-qwen',
+    'ratingWorkflowEnabled',
+    'MinerU'
 )
 $markerResults = foreach ($marker in $markers) {
     [pscustomobject]@{ Marker = $marker; Present = (Test-ArchiveMarker -XpiPath $liveXpi -Marker $marker) }
@@ -81,14 +93,16 @@ $result = [pscustomobject]@{
     Version          = $manifest.version
     ExpectedVersion  = $ExpectedVersion
     VersionMatches   = ($manifest.version -eq $ExpectedVersion)
-    AutomaticUpdateEndpointDisabled = $automaticUpdateEndpointDisabled
+    UpdateUrl        = $manifest.applications.zotero.update_url
+    ExpectedUpdateUrl = $ExpectedUpdateUrl
+    UpdateEndpointControlled = $updateEndpointControlled
     PatchMarkers     = $markerResults
     PatchIntact      = (($markerResults | Where-Object { -not $_.Present }).Count -eq 0)
 }
 
 $result | Format-List
 
-if (-not $result.VersionMatches -or -not $result.PatchIntact -or -not $result.AutomaticUpdateEndpointDisabled) {
+if (-not $result.VersionMatches -or -not $result.PatchIntact -or -not $result.UpdateEndpointControlled) {
     Write-Error 'AI Butler has been updated or the local workflow patch is incomplete. Do not overwrite the XPI while Zotero is running; follow UPGRADE_GUARD.md.'
     exit 1
 }

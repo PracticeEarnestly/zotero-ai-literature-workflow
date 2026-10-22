@@ -10,57 +10,40 @@ import zipfile
 from pathlib import Path
 
 
+EXPECTED_UPDATE_URL = (
+    "https://github.com/PracticeEarnestly/zotero-ai-literature-workflow/"
+    "releases/download/release/update.json"
+)
+
 MARKERS = (
-    "workflowPreset",
-    "collectionL1Summary",
-    "handleCollectionL1Summary",
-    "autoScanPromptName",
-    "pendingL2Parents",
-    "pendingL3Parents",
-    "pendingRatedL1Parents",
+    "zotero-itemmenu-ai-butler-workflow-preset",
+    "zotero-collectionmenu-ai-butler-workflow-preset",
+    "zotero-collectionmenu-ai-butler-workflow-l1",
+    "zotero-collectionmenu-ai-butler-workflow-l2",
+    "zotero-collectionmenu-ai-butler-workflow-l3",
+    "zotero-collectionmenu-ai-butler-workflow-repair",
+    "handleCollectionWorkflowLevel",
+    "handleCollectionRatedWorkflowRepair",
+    "handleSelectedWorkflowLevel",
     "getItemRating(item)",
     r"extra.match(/(?:^|\r?\n)\s*rate\s*:\s*([1-5])\s*(?=\r?\n|$)/i)",
-    "async enqueueL2IfRated",
-    "async enqueueL3IfRated",
     "enqueueRatedWorkflow(item)",
-    "async enqueueL1IfMissingForRating",
-    "scheduleQueuedTaskStart(taskQueue)",
-    'workflowLevel: "L2"',
-    'workflowLevel: "L3"',
-    "getWorkflowCompletionTag(workflowLevel)",
-    "getFirstAccessiblePDFAttachment(item)",
-    "[AI-Butler] Resuming persisted pending tasks",
+    "enqueueWorkflowLevel",
     'noteStrategy: "append"',
-    "buildWorkflowRequestPrompt",
-    "getWorkflowEndpointId(workflowLevel)",
-    "ensureWorkflowEndpointConfiguration()",
-    'workflowLevel: "L1"',
+    "getWorkflowEndpointId",
+    "getWorkflowPrompt",
+    "getCompletedL1State",
+    "getWorkflowLevelState",
     "generateWithEndpoint(endpointId, request)",
-    "inferredWorkflowLevel",
-    "scanRecentRatedL2Items()",
-    "recentRatingWindowMs",
-    "bindStyleRatingClickFallback(win)",
-    "static extractZoteroTags",
-    "applyZoteroTags(item, tags)",
-    "filterWorkflowTopicTags",
-    "detectWorkflowLevelState",
-    "this.scheduleQueuedTaskStart(taskQueue);",
-    "abortedTaskRecoveryCount",
-    "Recovered aborted tasks from persisted queue",
-    "readLlmForZoteroMineruCache",
-    "native-zip-fallback",
-    "direct-pdf-fallback",
-    'taskIntent: "manual-rerun"',
-    "workflowLlmCacheDiagnosticsByItem",
-    "Data:AvailableOnRequest",
-    "Summary response metrics:",
-    "validateResponseText",
-    "LLMEmptyResponseError",
-    "Recovered missing ${workflowLevel} workflow heading",
-    "ensureWorkflowCompletionTag",
-    "resumeSavedWorkflowArtifact",
-    "savedArtifactRecoveryCount",
-    "Recovered saved-note tasks for tag-only repair",
+    "applyWorkflowTags",
+    "AI_BUTLER_L1_DATA_AVAILABILITY_V1",
+    "AI_BUTLER_FINAL_OUTPUT_ONLY_V1",
+    "note-without-tag",
+    "duplicate-item-artifact",
+    "workflow-confirm-collection-level-title",
+    "coordinator-qwen",
+    "ratingWorkflowEnabled",
+    "MinerU",
 )
 XPI_NAME = "zotero-ai-butler@github.com.xpi"
 
@@ -68,7 +51,8 @@ XPI_NAME = "zotero-ai-butler@github.com.xpi"
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile-dir", required=True, type=Path, help="Zotero profile directory")
-    parser.add_argument("--expected-version", default="3.8.5.28")
+    parser.add_argument("--expected-version", default="5.1.0.3")
+    parser.add_argument("--expected-update-url", default=EXPECTED_UPDATE_URL)
     args = parser.parse_args()
 
     xpi_path = args.profile_dir / "extensions" / XPI_NAME
@@ -89,19 +73,21 @@ def main() -> int:
     marker_results = {marker: marker in source for marker in MARKERS}
     version_matches = version == args.expected_version
     patch_intact = all(marker_results.values())
-    automatic_update_endpoint_disabled = not update_url
+    update_endpoint_controlled = update_url == args.expected_update_url
 
     print(f"ProfileDirectory: {args.profile_dir}")
     print(f"XpiPath: {xpi_path}")
     print(f"Version: {version}")
     print(f"ExpectedVersion: {args.expected_version}")
     print(f"VersionMatches={'True' if version_matches else 'False'}")
-    print(f"AutomaticUpdateEndpointDisabled={'True' if automatic_update_endpoint_disabled else 'False'}")
+    print(f"UpdateUrl: {update_url}")
+    print(f"ExpectedUpdateUrl: {args.expected_update_url}")
+    print(f"UpdateEndpointControlled={'True' if update_endpoint_controlled else 'False'}")
     for marker, present in marker_results.items():
         print(f"Marker {marker!r}: {'True' if present else 'False'}")
     print(f"PatchIntact={'True' if patch_intact else 'False'}")
 
-    if not (version_matches and patch_intact and automatic_update_endpoint_disabled):
+    if not (version_matches and patch_intact and update_endpoint_controlled):
         print(
             "AI Butler has been updated or the local workflow patch is incomplete. "
             "Exit Zotero and reinstall the custom XPI.",

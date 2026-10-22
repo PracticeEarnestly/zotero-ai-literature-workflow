@@ -7,7 +7,7 @@ index ab961ea..27adc41 100644
  import { MainWindow } from "./modules/views/MainWindow";
  import { AutoScanManager } from "./modules/autoScanManager";
 +import {
-+  handleCollectionL1Summary,
++  handleCollectionWorkflowLevel,
 +  handleCollectionRatedWorkflowRepair,
 +  handleSelectedWorkflowLevel,
 +} from "./modules/literatureWorkflowMenu";
@@ -15,7 +15,7 @@ index ab961ea..27adc41 100644
  import { AutoNoteExportManager } from "./modules/autoNoteExportManager";
  import { DEFAULT_NOTE_EXPORT_FILENAME_TEMPLATE } from "./modules/noteExportNaming";
  import { AgentService } from "./modules/agent/AgentService";
-@@ -386,6 +392,15 @@ const CONTEXT_MENU_DOM_IDS: Record<ContextMenuItemId, string> = {
+@@ -386,6 +392,18 @@ const CONTEXT_MENU_DOM_IDS: Record<ContextMenuItemId, string> = {
    exportCollectionNotes: "zotero-collectionmenu-ai-butler-export-notes",
  };
  
@@ -24,7 +24,10 @@ index ab961ea..27adc41 100644
 +  "zotero-itemmenu-ai-butler-workflow-l1",
 +  "zotero-itemmenu-ai-butler-workflow-l2",
 +  "zotero-itemmenu-ai-butler-workflow-l3",
++  "zotero-collectionmenu-ai-butler-workflow-preset",
 +  "zotero-collectionmenu-ai-butler-workflow-l1",
++  "zotero-collectionmenu-ai-butler-workflow-l2",
++  "zotero-collectionmenu-ai-butler-workflow-l3",
 +  "zotero-collectionmenu-ai-butler-workflow-repair",
 +];
 +
@@ -41,7 +44,7 @@ index ab961ea..27adc41 100644
  }
  
  function setContextMenuElementVisibility(
-@@ -1197,6 +1215,62 @@ function registerContextMenuItem(win?: Window) {
+@@ -1197,6 +1218,81 @@ function registerContextMenuItem(win?: Window) {
      );
    };
  
@@ -80,11 +83,30 @@ index ab961ea..27adc41 100644
 +    {
 +      scope: "collection",
 +      options: {
-+        tag: "menuitem",
-+        id: "zotero-collectionmenu-ai-butler-workflow-l1",
-+        label: getString("workflow-menu-collection-l1"),
++        tag: "menu",
++        id: "zotero-collectionmenu-ai-butler-workflow-preset",
++        label: getString("workflow-menu-root"),
 +        icon: menuIcon,
-+        commandListener: () => handleCollectionL1Summary(),
++        children: [
++          {
++            tag: "menuitem",
++            id: "zotero-collectionmenu-ai-butler-workflow-l1",
++            label: getString("workflow-menu-l1"),
++            commandListener: () => handleCollectionWorkflowLevel("L1"),
++          },
++          {
++            tag: "menuitem",
++            id: "zotero-collectionmenu-ai-butler-workflow-l2",
++            label: getString("workflow-menu-l2"),
++            commandListener: () => handleCollectionWorkflowLevel("L2"),
++          },
++          {
++            tag: "menuitem",
++            id: "zotero-collectionmenu-ai-butler-workflow-l3",
++            label: getString("workflow-menu-l3"),
++            commandListener: () => handleCollectionWorkflowLevel("L3"),
++          },
++        ],
 +        getVisibility: () => isWorkflowCoordinator(),
 +      },
 +    },
@@ -104,7 +126,7 @@ index ab961ea..27adc41 100644
    const menuDefinitions: Record<ContextMenuItemId, ContextMenuDefinition> = {
      generateSummary: {
        scope: "item",
-@@ -1330,11 +1404,14 @@ function registerContextMenuItem(win?: Window) {
+@@ -1330,11 +1426,14 @@ function registerContextMenuItem(win?: Window) {
      },
    };
  
@@ -128,7 +150,7 @@ diff --git a/addon/locale/en-US/addon.ftl b/addon/locale/en-US/addon.ftl
 index 9aa1d65..0ae89d2 100644
 --- a/addon/locale/en-US/addon.ftl
 +++ b/addon/locale/en-US/addon.ftl
-@@ -237,3 +237,18 @@ agent-runtime-approved = Approved: { $tool }
+@@ -237,3 +237,17 @@ agent-runtime-approved = Approved: { $tool }
  agent-runtime-declined = Declined: { $tool }
  agent-runtime-approval = Review the proposed library change: { $tool }
  agent-runtime-step-limit = Agent reached its { $count }-step budget. Evidence and progress have been saved; send a follow-up to continue.
@@ -138,10 +160,9 @@ index 9aa1d65..0ae89d2 100644
 +workflow-menu-l1 = L1: One Sentence
 +workflow-menu-l2 = L2: Evidence Card
 +workflow-menu-l3 = L3: Deep Reading
-+workflow-menu-collection-l1 = Batch L1 summaries and tags
 +workflow-menu-collection-repair = Scan rated items and fill missing levels
-+workflow-confirm-collection-l1-title = Batch L1 summaries
-+workflow-confirm-collection-l1-body = Run L1 for { $count } items in “{ $collection }”? Items with existing results or no usable attachment will be skipped.
++workflow-confirm-collection-level-title = Batch { $level }
++workflow-confirm-collection-level-body = Run { $level } for { $count } items in “{ $collection }”? Existing results and unavailable attachments will be skipped; { $uncertain } uncertain items will not be rerun automatically.
 +workflow-confirm-rated-repair-title = Fill missing rated workflow levels
 +workflow-confirm-rated-repair-body = Fill only missing L1/L2/L3 levels for { $count } items in “{ $collection }”? { $uncertain } uncertain items will not be rerun automatically.
 +workflow-error-tags-root = Structured Zotero tag JSON root must be an object.
@@ -151,7 +172,7 @@ diff --git a/addon/locale/zh-CN/addon.ftl b/addon/locale/zh-CN/addon.ftl
 index d69d348..ed7bf21 100644
 --- a/addon/locale/zh-CN/addon.ftl
 +++ b/addon/locale/zh-CN/addon.ftl
-@@ -237,3 +237,18 @@ agent-runtime-approved = 已允许：{ $tool }
+@@ -237,3 +237,17 @@ agent-runtime-approved = 已允许：{ $tool }
  agent-runtime-declined = 已拒绝：{ $tool }
  agent-runtime-approval = 请检查拟执行的文献库修改：{ $tool }
  agent-runtime-step-limit = Agent 已达到 { $count } 步运行预算。证据和进度已保存，可发送追问继续。
@@ -161,10 +182,9 @@ index d69d348..ed7bf21 100644
 +workflow-menu-l1 = L1：One Sentence
 +workflow-menu-l2 = L2：Evidence Card
 +workflow-menu-l3 = L3：Deep Reading
-+workflow-menu-collection-l1 = L1 批量文献总结并打标签
 +workflow-menu-collection-repair = 扫描已评分文献并补齐流程
-+workflow-confirm-collection-l1-title = L1 批量文献总结
-+workflow-confirm-collection-l1-body = 将对“{ $collection }”中 { $count } 篇文献运行 L1。已有结果和无可用附件条目会跳过。是否继续？
++workflow-confirm-collection-level-title = 批量运行 { $level }
++workflow-confirm-collection-level-body = 将对“{ $collection }”中 { $count } 篇文献运行 { $level }。已有结果和无可用附件条目会跳过；状态不明确的 { $uncertain } 篇不会自动重跑。是否继续？
 +workflow-confirm-rated-repair-title = 补齐已评分文献流程
 +workflow-confirm-rated-repair-body = 分类“{ $collection }”将只补齐 { $count } 篇文献缺失的 L1/L2/L3；状态不明确的 { $uncertain } 篇不会自动重跑。是否继续？
 +workflow-error-tags-root = 结构化 Zotero 标签 JSON 的根节点必须是对象。
@@ -174,20 +194,19 @@ diff --git a/typings/i10n.d.ts b/typings/i10n.d.ts
 index ec31219..cc2b82f 100644
 --- a/typings/i10n.d.ts
 +++ b/typings/i10n.d.ts
-@@ -839,4 +839,17 @@ export type FluentMessageId =
+@@ -839,4 +839,16 @@ export type FluentMessageId =
    | 'task-status-processing'
    | 'task-title-review'
    | 'task-title-targeted-question'
 -  | 'theme-redstriking-name';
 +  | 'theme-redstriking-name'
-+  | 'workflow-confirm-collection-l1-body'
-+  | 'workflow-confirm-collection-l1-title'
++  | 'workflow-confirm-collection-level-body'
++  | 'workflow-confirm-collection-level-title'
 +  | 'workflow-confirm-rated-repair-body'
 +  | 'workflow-confirm-rated-repair-title'
 +  | 'workflow-error-data-availability'
 +  | 'workflow-error-tags-array'
 +  | 'workflow-error-tags-root'
-+  | 'workflow-menu-collection-l1'
 +  | 'workflow-menu-collection-repair'
 +  | 'workflow-menu-l1'
 +  | 'workflow-menu-l2'

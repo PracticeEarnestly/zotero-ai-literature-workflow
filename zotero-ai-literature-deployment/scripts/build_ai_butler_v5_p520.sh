@@ -21,5 +21,5 @@ npm --prefix "$work_dir/source" run build
 npm --prefix "$work_dir/source" run test:compat
 
 cp "$work_dir/source/.scaffold/build/zotero-ai-butler.xpi" \
-  "$repo_root/release/zotero-ai-butler-5.1.0.2-p520.xpi"
-shasum -a 256 "$repo_root/release/zotero-ai-butler-5.1.0.2-p520.xpi"
+  "$repo_root/release/zotero-ai-butler-5.1.0.3-p520.xpi"
+shasum -a 256 "$repo_root/release/zotero-ai-butler-5.1.0.3-p520.xpi"

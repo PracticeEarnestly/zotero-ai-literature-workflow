@@ -5,7 +5,7 @@ AI Butler 5.1.0 source tree.
 
 - Upstream repository: `https://github.com/steven-jianhao-li/zotero-AI-Butler.git`
 - Pinned upstream commit: `2a3ba3a16114f6a61e581c3eb0b40a089d63f165`
-- Derived package version: `5.1.0.2`
+- Derived package version: `5.1.0.3`
 - Target role: `coordinator-qwen` on P520 only
 - Update feed: this repository, never the upstream release feed
 
@@ -17,7 +17,8 @@ handling, and Zotero 7-10 compatibility. It adds only:
 3. Rating workflow: 1 star ensures L1, 2-4 stars add L2, 5 stars adds L3.
 4. Structured Zotero tag extraction and `AI:L1`/`AI:L2`/`AI:L3` completion tags.
 5. Per-task append strategy so later levels do not overwrite earlier notes.
-6. Restored item/collection workflow menus independent of old visibility prefs.
+6. Matching item/collection L1/L2/L3 workflow menus independent of old
+   visibility preferences, plus the collection rating-repair action.
 7. L1 data-availability contract, strict L1/L2/L3 output validation, safe
    completion-tag recovery, and cross-item L1 duplicate detection.
 

@@ -81,10 +81,12 @@ export async function handleSelectedWorkflowLevel(
   }
 }
 
-export async function handleCollectionL1Summary(): Promise<void> {
+export async function handleCollectionWorkflowLevel(
+  level: WorkflowLevel,
+): Promise<void> {
   if (!coordinatorReady()) return;
-  if (!getWorkflowPrompt("L1")) {
-    showToast("未找到 L1 提示词，请先在 AI Butler 设置中保存", "error");
+  if (!getWorkflowPrompt(level)) {
+    showToast(`未找到 ${level} 提示词，请先在 AI Butler 设置中保存`, "error");
     return;
   }
   const collection = Zotero.getActiveZoteroPane()?.getSelectedCollection();
@@ -94,42 +96,65 @@ export async function handleCollectionL1Summary(): Promise<void> {
   }
   const manager = AutoScanManager.getInstance();
   const candidates: Zotero.Item[] = [];
-  let skipped = 0;
+  const summary = {
+    scanned: 0,
+    complete: 0,
+    uncertain: 0,
+    noAttachment: 0,
+  };
   for (const item of collection.getChildItems()) {
-    if (!item.isRegularItem?.()) {
-      skipped += 1;
+    if (!item.isRegularItem?.()) continue;
+    summary.scanned += 1;
+    const state =
+      level === "L1"
+        ? await getCompletedL1State(item)
+        : await getWorkflowLevelState(item, level);
+    if (state.state === "complete") {
+      summary.complete += 1;
       continue;
     }
-    const state = await getCompletedL1State(item);
-    if (state.state !== "missing") {
-      skipped += 1;
+    if (state.state === "unknown") {
+      summary.uncertain += 1;
       continue;
     }
-    if (!(await manager.hasUsableAnalyzableAttachment(item))) {
-      skipped += 1;
+    if (
+      state.state === "missing" &&
+      !(await manager.hasUsableAnalyzableAttachment(item))
+    ) {
+      summary.noAttachment += 1;
       continue;
     }
     candidates.push(item);
   }
   if (!candidates.length) {
-    showToast(`「${collection.name}」没有需要生成 L1 的新 PDF 文献`);
+    showToast(
+      `「${collection.name}」没有可运行的 ${level} 条目：已完成 ${summary.complete}，待确认 ${summary.uncertain}，无附件 ${summary.noAttachment}`,
+    );
     return;
   }
   const confirmed = Services.prompt.confirm(
     Zotero.getMainWindow() as any,
-    getString("workflow-confirm-collection-l1-title"),
-    getString("workflow-confirm-collection-l1-body", {
-      args: { collection: collection.name, count: candidates.length },
+    getString("workflow-confirm-collection-level-title", {
+      args: { level },
+    }),
+    getString("workflow-confirm-collection-level-body", {
+      args: {
+        level,
+        collection: collection.name,
+        count: candidates.length,
+        uncertain: summary.uncertain,
+      },
     }),
   );
   if (!confirmed) return;
   for (const item of candidates) {
-    await manager.enqueueWorkflowLevel(item, "L1");
+    await manager.enqueueWorkflowLevel(item, level);
   }
   await maybeOpenTaskPanel();
   showToast(
-    `已加入 L1 检查：${candidates.length} 篇；跳过 ${skipped} 篇`,
+    `已扫描 ${summary.scanned} 篇，安排 ${level} ${candidates.length} 篇；已完成 ${summary.complete}，待确认 ${summary.uncertain}，无附件 ${summary.noAttachment}`,
     "success",
+    6000,
   );
 }
 
