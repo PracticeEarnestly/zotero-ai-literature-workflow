@@ -13,6 +13,7 @@ zotero-ai-literature-deployment/source/
 !release/
 !release/zotero-ai-butler-3.8.5.25-public.xpi
 !release/zotero-ai-butler-3.8.5.28-public.xpi
+!release/zotero-ai-butler-5.1.0.1-p520.xpi
 !release/zotero-llm-automation-bridge-0.1.5.xpi
 
 # Local development/build state
