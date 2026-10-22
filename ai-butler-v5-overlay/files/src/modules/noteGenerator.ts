@@ -520,7 +520,10 @@ export class NoteGenerator {
 
       let workflowTags: string[] = [];
       if (options?.workflowLevel) {
-        const workflowResult = extractWorkflowResult(fullContent);
+        const workflowResult = extractWorkflowResult(
+          fullContent,
+          options.workflowLevel,
+        );
         fullContent = workflowResult.cleanContent;
         workflowTags = workflowResult.tags;
       }

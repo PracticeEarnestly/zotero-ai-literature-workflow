@@ -21,10 +21,12 @@ import { AiNoteService, type AiNoteKind } from "./aiNoteService";
 import { ContentExtractor } from "./contentExtractor";
 import { TaskQueueManager, getSummaryTaskId } from "./taskQueue";
 import {
+  applyWorkflowTags,
+  getCompletedL1State,
   getItemRating,
+  getWorkflowLevelState,
   getWorkflowEndpointId,
   getWorkflowPrompt,
-  hasWorkflowLevel,
   isRatingWorkflowEnabled,
   isWorkflowCoordinator,
   type WorkflowLevel,
@@ -217,7 +219,7 @@ export class AutoScanManager {
   }
 
   /** 判断是否存在可用的可分析附件 */
-  private async hasUsableAnalyzableAttachment(
+  public async hasUsableAnalyzableAttachment(
     item: Zotero.Item,
   ): Promise<boolean> {
     try {
@@ -233,7 +235,11 @@ export class AutoScanManager {
     if (!this.shouldProcess(item)) return;
 
     if (isWorkflowCoordinator()) {
-      await this.enqueueWorkflowLevel(item, "L1");
+      if (isRatingWorkflowEnabled() && getItemRating(item) > 0) {
+        await this.enqueueRatedWorkflow(item);
+      } else {
+        await this.enqueueWorkflowLevel(item, "L1");
+      }
       return;
     }
 
@@ -299,11 +305,29 @@ export class AutoScanManager {
     this.retryTimers.set(item.id, timer);
   }
 
-  private async enqueueWorkflowLevel(
+  public async enqueueWorkflowLevel(
     item: Zotero.Item,
     level: WorkflowLevel,
+    priority: boolean = false,
   ): Promise<boolean> {
-    if (hasWorkflowLevel(item, level)) return true;
+    const state =
+      level === "L1"
+        ? await getCompletedL1State(item)
+        : await getWorkflowLevelState(item, level);
+    if (state.state === "complete") return true;
+    if (state.state === "recoverable") {
+      await applyWorkflowTags(item, level, []);
+      ztoolkit.log(
+        `[LiteratureWorkflow] Recovered missing ${level} completion tag: ${item.getField("title")}`,
+      );
+      return true;
+    }
+    if (state.state === "unknown") {
+      ztoolkit.log(
+        `[LiteratureWorkflow] ${level} state is uncertain (${state.reason}); automatic rerun skipped`,
+      );
+      return false;
+    }
     if (!(await this.hasUsableAnalyzableAttachment(item))) {
       this.pendingParents.add(item.id);
       return false;
@@ -323,7 +347,7 @@ export class AutoScanManager {
       ztoolkit.log(`[LiteratureWorkflow] Missing ${level} prompt; not queued`);
       return false;
     }
-    await queue.addTask(item, false, {
+    await queue.addTask(item, priority, {
       summaryMode: "single",
       source: "auto",
       prompt,
@@ -337,7 +361,7 @@ export class AutoScanManager {
     return false;
   }
 
-  private async enqueueRatedWorkflow(item: Zotero.Item): Promise<void> {
+  public async enqueueRatedWorkflow(item: Zotero.Item): Promise<void> {
     const rating = getItemRating(item);
     if (rating < 1) return;
     if (!(await this.enqueueWorkflowLevel(item, "L1"))) return;

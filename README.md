@@ -13,13 +13,13 @@ It includes deployment documentation, L1–L3 prompt templates, workflow scripts
 
 For the full deployment guide, start with [Zotero_AI_Literature_L1_L2_L3_Codex_Deployment_V2.md](zotero-ai-literature-deployment/Zotero_AI_Literature_L1_L2_L3_Codex_Deployment_V2.md).
 
-## AI Butler 5.1.0.1 for P520
+## AI Butler 5.1.0.2 for P520
 
-P520 now uses [`release/zotero-ai-butler-5.1.0.1-p520.xpi`](release/zotero-ai-butler-5.1.0.1-p520.xpi), built from official AI Butler 5.1.0 plus the small coordinator overlay in [`ai-butler-v5-overlay`](ai-butler-v5-overlay). Other reading devices should use the unmodified official release.
+P520 now uses [`release/zotero-ai-butler-5.1.0.2-p520.xpi`](release/zotero-ai-butler-5.1.0.2-p520.xpi), built from official AI Butler 5.1.0 plus the small coordinator overlay in [`ai-butler-v5-overlay`](ai-butler-v5-overlay). Other reading devices should use the unmodified official release.
 
-SHA-256: `fdb1f1388ba39f0054945ecfde3dad4aa16035dafe347f9182b7b91c25629134`
+SHA-256: `f866feda3b55688a269c71ee46ea327ffb644a3e21cfdfa8ec85b29aa27d2188`
 
-See [release notes](zotero-ai-literature-deployment/RELEASE_5.1.0.1_P520.md) and the [migration status](zotero-ai-literature-deployment/MIGRATION_STATUS_2026-10-22.md).
+See [release notes](zotero-ai-literature-deployment/RELEASE_5.1.0.2_P520.md) and the [migration status](zotero-ai-literature-deployment/MIGRATION_STATUS_2026-10-22.md).
 
 ## Legacy AI Butler 3.8.5.28
 

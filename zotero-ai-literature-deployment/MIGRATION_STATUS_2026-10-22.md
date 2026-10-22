@@ -4,12 +4,12 @@
 
 - Official 5.1.0 source was pinned at commit
   `2a3ba3a16114f6a61e581c3eb0b40a089d63f165`.
-- P520 coordinator overlay `5.1.0.1` was built and passed the queue and Zotero
+- P520 coordinator overlay `5.1.0.2` was built and passed the queue and Zotero
   compatibility test suites.
 - Other reading devices remain on the official, unmodified AI Butler release.
 - P520 production deployment completed after a verified XPI/preferences backup.
 - Rollback backup:
-  `/home/xiqing/zotero-ai-butler-backups/20261022-1601-before-5.1.0.1`.
+  `/home/xiqing/zotero-ai-butler-backups/20261022-162445-before-5.1.0.2`.
 
 ## Scope
 
@@ -34,11 +34,11 @@ and reviewed public release packages.
 
 | Runtime | AI Butler | Role | PDF mode | XPI SHA-256 |
 | --- | --- | --- | --- | --- |
-| P520 | `5.1.0.1` | `coordinator-qwen` | `mineru` | `fdb1f1388ba39f0054945ecfde3dad4aa16035dafe347f9182b7b91c25629134` |
+| P520 | `5.1.0.2` | `coordinator-qwen` | `mineru` | `f866feda3b55688a269c71ee46ea327ffb644a3e21cfdfa8ec85b29aa27d2188` |
 | Mac | `3.8.5.25` | default `reader-standby`; rating automation disabled | `mineru` | `9e2796398fa96bebccdacba76343cc20f9331ec3c28e9a5b194cd0bed7ba075b` |
 
 Both installed XPIs passed ZIP integrity checks. After the P520 migration,
-Zotero reported AI Butler `5.1.0.1` active and enabled. The local Qwen endpoint
+Zotero reported AI Butler `5.1.0.2` active and enabled. The local Qwen endpoint
 returned HTTP 200 with one model. L1/L2/L3 prompt lengths remained 4908, 7924,
 and 13189 characters. No workflow task was submitted during deployment.
 
@@ -52,7 +52,7 @@ preferences are not copied because they can contain credentials.
 2. Comparing the reviewed public `3.8.5.25` XPI with the P520 `3.8.5.28` XPI
    shows changes only in `content/scripts/aiButler.js` and `manifest.json`.
 3. The previous P520 `3.8.5.28` XPI retained the upstream auto-update URL. The
-   installed `5.1.0.1` package now uses this repository's controlled update feed.
+   installed `5.1.0.2` package now uses this repository's controlled update feed.
 4. The Windows maintenance directory is being audited against GitHub `main` for
    source, prompts, scripts, tests, release notes, and validation reports that
    have not yet been committed.
